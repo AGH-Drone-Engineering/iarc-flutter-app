@@ -1,7 +1,7 @@
 name: flutter_esp_android_communication
 description: "A new Flutter project."
 publish_to: 'none'
-version: 0.1.0
+version: 1.0.0+build
 
 environment:
   sdk: ^3.9.0
