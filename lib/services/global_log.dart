@@ -1,9 +1,19 @@
 // lib/services/global_log.dart
 import 'dart:collection';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
 
 /// Single source of truth for log levels.
-enum LogLevels { error, warn, info, received }
+enum LogLevels { error, warn, info, received, sent }
+
+final Map<LogLevels, Color> colorMap = {
+  LogLevels.warn: Colors.yellow,
+  LogLevels.error: Colors.red,
+  LogLevels.info: Colors.grey,
+  LogLevels.received: Colors.green,
+  LogLevels.sent: Colors.purple
+};
+
 
 /// Log entry model.
 class Log {
@@ -49,3 +59,4 @@ void logInfo(String m) => addLog(LogLevels.info, m);
 void logWarn(String m) => addLog(LogLevels.warn, m);
 void logError(String m) => addLog(LogLevels.error, m);
 void logRx(String m) => addLog(LogLevels.received, m);
+void logSnt(String m) => addLog(LogLevels.sent, m);

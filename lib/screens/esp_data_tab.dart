@@ -1,8 +1,12 @@
 // lib/screens/esp_data_tab.dart
 import 'package:flutter/material.dart';
+import 'package:flutter_esp_android_communication/services/global_log.dart';
+import 'package:latlong2/latlong.dart'; // LatLng, Distance
 import 'package:provider/provider.dart';
 import 'package:usb_serial/usb_serial.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
+import 'package:flutter_compass/flutter_compass.dart';
+import 'package:geolocator/geolocator.dart';
 
 import '../state/app_state.dart';
 import '../widgets/voice_button.dart';
@@ -12,6 +16,7 @@ enum CommandOption {
   setAltitude, // requires numeric value (meters)
   flyForward,  // requires numeric value (meters)
   land,
+  proceed,
 }
 
 class EspDataTab extends StatefulWidget {
@@ -93,6 +98,8 @@ class _EspDataTabState extends State<EspDataTab> {
         return 'FLY_FORWARD ${_fmtNumber(value ?? 0)}';
       case CommandOption.land:
         return 'LAND';
+      case CommandOption.proceed:
+        return 'PROCEED';
     }
   }
 
@@ -102,7 +109,7 @@ class _EspDataTabState extends State<EspDataTab> {
     final text = phrase.toLowerCase().trim();
 
     // Regex helpers to pull a number if present
-    double? _pullNumber(RegExp re) {
+    double? pullNumber(RegExp re) {
       final m = re.firstMatch(text);
       if (m != null && m.groupCount >= 1) {
         return double.tryParse(m.group(1)!.replaceAll(',', '.'));
@@ -113,21 +120,19 @@ class _EspDataTabState extends State<EspDataTab> {
     // Order matters: parameterized commands first
 
     // Set altitude to X (meters)
-    // Matches: "set altitude to 50", "altitude 100", "set alt 120 meters", "height 30"
-    final altRe =
-    RegExp(r'(?:set\s+)?(?:altitude|alt|height)\s*(?:to)?\s*(\d+(?:[\.,]\d+)?)');
+    final altRe = RegExp(
+        r'(?:set\s+)?(?:altitude|alt|height)\s*(?:to)?\s*(\d+(?:[\.,]\d+)?)');
     if (altRe.hasMatch(text)) {
-      final v = _pullNumber(altRe);
+      final v = pullNumber(altRe);
       if (v == null) return (null, 'Could not read altitude value');
       return (_buildCmdString(CommandOption.setAltitude, v), null);
     }
 
     // Fly forward X (meters)
-    // Matches: "fly forward 10", "go forward 5 meters", "forward 12"
     final fwdRe = RegExp(
         r'(?:(?:fly|go|move)\s+)?forward\s*(\d+(?:[\.,]\d+)?)(?:\s*(?:m|meter|meters))?');
     if (fwdRe.hasMatch(text)) {
-      final v = _pullNumber(fwdRe);
+      final v = pullNumber(fwdRe);
       if (v == null) return (null, 'Could not read distance value');
       return (_buildCmdString(CommandOption.flyForward, v), null);
     }
@@ -137,13 +142,17 @@ class _EspDataTabState extends State<EspDataTab> {
       return (_buildCmdString(CommandOption.land), null);
     }
 
+    // Proceed
+    if (RegExp(r'\b(proceed|continue|resume)\b').hasMatch(text)) {
+      return (_buildCmdString(CommandOption.proceed), null);
+    }
+
     // Start
     if (RegExp(r'\b(start|arm|begin)\b').hasMatch(text)) {
       return (_buildCmdString(CommandOption.start), null);
     }
 
     return (null, 'Unrecognized command');
-    // You can expand with more synonyms if needed.
   }
 
   Future<void> _startVoiceCommand(AppState app) async {
@@ -171,10 +180,10 @@ class _EspDataTabState extends State<EspDataTab> {
         if (!mounted) return;
         setState(() {
           _heardText = text;
-          // Always attempt parsing so user sees live parse; only final will be used for sending
+          // Parse continuously; only send on user confirmation
           final parsed = _parseVoiceToCommand(text);
-          _parsedCmdString = parsed.$1;
-          _parseError = parsed.$2;
+          _parsedCmdString = parsed.$1; // first positional field
+          _parseError = parsed.$2;      // second positional field
         });
       },
     );
@@ -184,15 +193,73 @@ class _EspDataTabState extends State<EspDataTab> {
     final s = _parsedCmdString;
     if (s == null || s.isEmpty) {
       _showSnack(_parseError ?? 'Nothing to send');
+      if (_parseError != null) {
+        logError(_parseError!);
+      }
+
       return;
     }
+
+    // If it's a FLY_FORWARD, compute a precise target using phone pose
+    final m = RegExp(r'^\s*fly[_\s]?forward\s+([0-9]+(?:\.[0-9]+)?)\s*$', caseSensitive: false)
+        .firstMatch(s);
+    if (m != null) {
+      final meters = double.tryParse(m.group(1)!);
+      if (meters != null) {
+        await _sendFlyForwardWithTarget(app, meters);
+        _clearHeard();
+        return;
+      }
+    }
+
     await app.serial.sendText('$s\n');
-    _showSnack('Sent: $s');
-    setState(() {
-      _heardText = '';
-      _parsedCmdString = null;
-      _parseError = null;
-    });
+    logSnt(s);
+    _clearHeard();
+  }
+
+  Future<double?> _getHeadingDegrees() async {
+    try {
+      final ev = await FlutterCompass.events
+          ?.firstWhere((e) => e.heading != null && e.heading!.isFinite)
+          .timeout(const Duration(milliseconds: 800));
+      if (ev?.heading != null && ev!.heading!.isFinite) return ev.heading;
+    } catch (_) {}
+    try {
+      final pos = await Geolocator.getCurrentPosition();
+      if (pos.heading.isFinite && pos.heading >= 0) return pos.heading;
+    } catch (_) {}
+    return null;
+  }
+
+  Future<LatLng?> _getCurrentLatLng() async {
+    try {
+      final pos = await Geolocator.getCurrentPosition();
+      return LatLng(pos.latitude, pos.longitude);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _sendFlyForwardWithTarget(AppState app, double meters) async {
+    final start = await _getCurrentLatLng();
+    if (start == null) {
+      _showSnack('Current location unavailable');
+      await app.serial.sendText('FLY_FORWARD ${_fmtNumber(meters)}\n');
+      return;
+    }
+
+    final heading = await _getHeadingDegrees(); // degrees 0..360
+    if (heading == null) {
+      _showSnack('Heading (compass) unavailable');
+      await app.serial.sendText('FLY_FORWARD ${_fmtNumber(meters)}\n');
+      return;
+    }
+
+    // latlong2: compute destination from start, distance (m), bearing (deg)
+    final dest = Distance().offset(start, meters, heading);
+    app.singlePoint = dest;
+    // Keep the string protocol + also send a precise target coordinate
+    await app.serial.sendText('FLY_FORWARD ${dest.latitude.toStringAsFixed(7)},${dest.longitude.toStringAsFixed(7)}\n');
   }
 
   Future<void> _sendSelectedCommand(AppState app) async {
@@ -214,12 +281,23 @@ class _EspDataTabState extends State<EspDataTab> {
           _showSnack('Enter a valid distance (meters).');
           return;
         }
-        await app.serial.sendText('${_buildCmdString(CommandOption.flyForward, v)}\n');
+        await _sendFlyForwardWithTarget(app, v); // <-- use sensor-derived target
         return;
       case CommandOption.land:
         await app.serial.sendText('${_buildCmdString(CommandOption.land)}\n');
         return;
+      case CommandOption.proceed:
+        await app.serial.sendText('${_buildCmdString(CommandOption.proceed)}\n');
+        return;
     }
+  }
+
+  void _clearHeard() {
+    setState(() {
+      _heardText = '';
+      _parsedCmdString = null;
+      _parseError = null;
+    });
   }
 
   void _showSnack(String msg) {
@@ -326,13 +404,7 @@ class _EspDataTabState extends State<EspDataTab> {
                       mainAxisAlignment: MainAxisAlignment.end,
                       children: [
                         OutlinedButton(
-                          onPressed: () {
-                            setState(() {
-                              _heardText = '';
-                              _parsedCmdString = null;
-                              _parseError = null;
-                            });
-                          },
+                          onPressed: _clearHeard,
                           child: const Text('Clear'),
                         ),
                         const SizedBox(width: 8),
@@ -373,6 +445,10 @@ class _EspDataTabState extends State<EspDataTab> {
                     DropdownMenuItem(
                       value: CommandOption.land,
                       child: Text('Land'),
+                    ),
+                    DropdownMenuItem(
+                      value: CommandOption.proceed,
+                      child: Text('Proceed'),
                     ),
                   ],
                   onChanged: (c) {

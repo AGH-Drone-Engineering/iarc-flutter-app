@@ -1,15 +1,16 @@
+// lib/screens/map_tab.dart
 import 'dart:async';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter_compass/flutter_compass.dart';
 import 'package:flutter_map/flutter_map.dart';
-import 'package:flutter_map_location_marker/flutter_map_location_marker.dart';
 import 'package:flutter_map_tile_caching/flutter_map_tile_caching.dart' as fmtc;
 import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:provider/provider.dart';
 
 import '../state/app_state.dart';
+import '../widgets/ground_dots_layer.dart';
 
 class MapTab extends StatefulWidget {
   const MapTab({super.key});
@@ -23,24 +24,67 @@ class _MapTabState extends State<MapTab> {
 
   StreamSubscription<CompassEvent>? _compassSub;
   StreamSubscription<Position>? _posSub;
+  StreamSubscription<MapEvent>? _mapSub;
+  Timer? _recenterTimer; // NEW
 
-  double? _headingMag;       // magnetometer heading [0..360)
-  double? _headingCourse;    // GPS course/bearing [0..360), -1 if unknown
-  double _lastValidHeading = 0.0; // persisted fallback, always finite
+  double? _headingDeg;
+  double _mapRotationDeg = 0;
+  LatLng? _user;
+  double _zoom = 2;
+  double _centerLat = 0;
+
+  bool? _lastRotatePref; // NEW: to detect toggle changes
 
   @override
   void initState() {
     super.initState();
 
-    // FMTC v10+ cache-first provider
     _tileProvider = fmtc.FMTCTileProvider(
       stores: const {'OSM': fmtc.BrowseStoreStrategy.readUpdateCreate},
       loadingStrategy: fmtc.BrowseLoadingStrategy.cacheFirst,
     );
 
     _initLocation();
-    _startGpsHeadingFallback();
-    _startCompass();
+
+    _compassSub = FlutterCompass.events?.listen((event) {
+      if (!mounted) return;
+      final h = event.heading;
+      if (h != null && h.isFinite) {
+        _headingDeg = h;
+        // Only rotate if the toggle is on
+        final rotate = context.read<AppState>().rotateWithCompass;
+        if (rotate) _rotateMapToHeading(h);
+        setState(() {});
+      }
+    });
+
+    const settings = LocationSettings(accuracy: LocationAccuracy.best, distanceFilter: 1);
+    _posSub = Geolocator.getPositionStream(locationSettings: settings).listen((pos) {
+      if (!mounted) return;
+      setState(() => _user = LatLng(pos.latitude, pos.longitude));
+    });
+
+    _mapSub = _mapController.mapEventStream.listen((evt) {
+      if (!mounted) return;
+      final cam = evt.camera;
+      _zoom = cam.zoom;
+      _centerLat = cam.center.latitude;
+      _mapRotationDeg = cam.rotation;
+
+      // Handle recentre after pan ended + 1s inactivity
+      if (evt is MapEventMoveStart || evt is MapEventMove) {
+        _recenterTimer?.cancel();
+      }
+      if (evt is MapEventMoveEnd) {
+        _recenterTimer?.cancel();
+        _recenterTimer = Timer(const Duration(seconds: 1), () {
+          if (!mounted) return;
+          if (_user != null) _mapController.move(_user!, _zoom);
+        });
+      }
+
+      setState(() {});
+    });
   }
 
   Future<void> _initLocation() async {
@@ -51,84 +95,69 @@ class _MapTabState extends State<MapTab> {
     try {
       final pos = await Geolocator.getCurrentPosition();
       if (!mounted) return;
-      _mapController.move(LatLng(pos.latitude, pos.longitude), 15);
-    } catch (_) {/* ignore */}
-  }
-
-  void _startCompass() {
-    _compassSub = FlutterCompass.events?.listen((event) {
-      if (!mounted) return;
-      final h = event.heading;
-      if (h != null && h.isFinite) {
-        _headingMag = h;
-        _lastValidHeading = h;
-        setState(() {});
-      }
-      // if null/NaN/Inf, keep showing last valid or GPS course
-    });
-  }
-
-  void _startGpsHeadingFallback() {
-    const settings = LocationSettings(
-      accuracy: LocationAccuracy.best,
-      distanceFilter: 1, // meters
-    );
-    _posSub = Geolocator.getPositionStream(locationSettings: settings).listen((pos) {
-      if (!mounted) return;
-      final h = pos.heading; // -1 if not available
-      if (h.isFinite && h >= 0) {
-        _headingCourse = h;
-        // don't overwrite _lastValidHeading; that tracks last *mag* or course used
-        setState(() {});
-      }
-    }, onError: (_) {/* ignore */});
+      _user = LatLng(pos.latitude, pos.longitude);
+      _centerLat = pos.latitude;
+      _mapController.move(_user!, 18);
+      setState(() {});
+    } catch (_) {}
   }
 
   @override
   void dispose() {
+    _recenterTimer?.cancel();
     _compassSub?.cancel();
     _posSub?.cancel();
+    _mapSub?.cancel();
     super.dispose();
   }
 
-  double _safeHeadingDeg() {
-    if (_headingMag != null && _headingMag!.isFinite) return _headingMag!;
-    if (_headingCourse != null && _headingCourse!.isFinite && _headingCourse! >= 0) {
-      _lastValidHeading = _headingCourse!;
-      return _headingCourse!;
+  double _metersPerPixel(double latDeg, double zoom) {
+    const earth = 40075016.68557849;
+    final latRad = latDeg * (math.pi / 180.0);
+    return (math.cos(latRad) * earth) / (256.0 * math.pow(2.0, zoom));
+  }
+
+  void _rotateMapToHeading(double headingDeg) {
+    final desired = (headingDeg % 360 + 360) % 360;
+    final diff = (desired - _mapRotationDeg).abs();
+    if (diff >= 1.0) {
+      _mapController.rotate(desired);
     }
-    return _lastValidHeading; // always finite
   }
 
   @override
   Widget build(BuildContext context) {
     final app = context.watch<AppState>();
 
+    // If the user just turned rotation OFF, gently reset map to north-up once.
+    final rotatePref = app.rotateWithCompass;
+    if (_lastRotatePref != rotatePref) {
+      if (!rotatePref && _mapRotationDeg.abs() > 0.5) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _mapController.rotate(0);
+        });
+      }
+      _lastRotatePref = rotatePref;
+    }
+
     final polygon = app.hasFourCorners
         ? [
       Polygon(
-        points: app.corners.whereType<LatLng>().toList(),
+        points: app.orderedCorners, // keep your ordered corners if present
         borderColor: Colors.indigo,
         borderStrokeWidth: 3,
-        color: Colors.indigo.withValues(alpha: .15),
+        color: Colors.indigo.withOpacity(0.15),
       ),
     ]
-        : <Polygon>[];
+        : const <Polygon>[];
 
-    final espMarkers = app.espPoints
-        .map(
-          (p) => Marker(
-        point: p,
-        width: 36,
-        height: 36,
-        child: const Icon(Icons.location_on, color: Colors.red, size: 30),
-      ),
-    )
-        .toList();
+    final angleRad = ((_headingDeg ?? 0) * (math.pi / 180.0));
 
-    final headingDeg = _safeHeadingDeg();
-    final angleRad = headingDeg * (math.pi / 180.0); // guaranteed finite
-    final headingText = '${headingDeg.round()}°';
+    final latForScale = _user?.latitude ?? _centerLat;
+    final mpp = _metersPerPixel(latForScale, _zoom);
+    final oneMeterPx = 1.0 / mpp;
+    double userMarkerPx = (oneMeterPx * 0.7).clamp(6.0, 18.0).toDouble();
+    final userMarkerRadius = userMarkerPx / 2.0;
 
     return Stack(
       children: [
@@ -137,10 +166,8 @@ class _MapTabState extends State<MapTab> {
           options: const MapOptions(
             initialCenter: LatLng(0, 0),
             initialZoom: 2,
-            // Disable map rotation so compass behavior is predictable after pinch-zoom
-            interactionOptions: InteractionOptions(
-              flags: InteractiveFlag.all & ~InteractiveFlag.rotate,
-            ),
+            interactionOptions: InteractionOptions(flags: InteractiveFlag.all),
+            initialRotation: 0,
           ),
           children: [
             TileLayer(
@@ -148,32 +175,60 @@ class _MapTabState extends State<MapTab> {
               userAgentPackageName: 'com.example.esp_map',
               tileProvider: _tileProvider,
             ),
-            const CurrentLocationLayer(
-              alignPositionOnUpdate: AlignOnUpdate.always,
-              alignDirectionOnUpdate: AlignOnUpdate.never,
-            ),
+
             if (polygon.isNotEmpty) PolygonLayer(polygons: polygon),
-            if (espMarkers.isNotEmpty) MarkerLayer(markers: espMarkers),
+
+            // 1m ground dots
+            GroundDotsLayer(
+              points: app.espPoints,
+              diameterMeters: 1.0,
+              color: Colors.red,
+              minPixelDiameter: 3.0,
+            ),
+            GroundDotsLayer(
+              points: app.singlePoint != null ? [app.singlePoint!] : const [],
+              diameterMeters: 1.0,
+              color: Colors.purpleAccent,
+              minPixelDiameter: 3.0,
+            ),
+
+            if (_user != null)
+              CircleLayer(
+                circles: [
+                  CircleMarker(
+                    point: _user!,
+                    radius: userMarkerRadius,
+                    color: Colors.blueAccent.withOpacity(0.95),
+                    borderStrokeWidth: 2,
+                    borderColor: Colors.white,
+                  ),
+                ],
+              ),
           ],
         ),
+
+        // Heading chip
         Positioned(
           right: 12,
           top: 12,
           child: Container(
             padding: const EdgeInsets.all(8),
             decoration: BoxDecoration(
-              color: Colors.black.withValues(alpha: .6),
+              color: Colors.black.withOpacity(0.6),
               borderRadius: BorderRadius.circular(12),
             ),
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
                 Transform.rotate(
-                  angle: angleRad, // never NaN/Inf
+                  angle: angleRad,
                   child: const Icon(Icons.navigation, color: Colors.white),
                 ),
                 const SizedBox(width: 8),
-                Text(headingText, style: const TextStyle(color: Colors.white)),
+                Text(
+                  _headingDeg == null ? '--°' : '${_headingDeg!.round()}°',
+                  style: const TextStyle(color: Colors.white),
+                ),
               ],
             ),
           ),

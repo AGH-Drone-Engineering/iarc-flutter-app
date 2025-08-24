@@ -22,18 +22,6 @@ class SerialService {
   Stream<LatLng> get pointStream => _pointCtl.stream;
   Stream<String> get logStream => _logsCtl.stream;
 
-  AppState? app;
-
-  void attachApp(AppState state) {
-    app = state;
-  }
-
-  void _log(LogLevels level, String msg) {
-    if (app != null) {
-      addLog(level, msg);
-    }
-  }
-
   void _status(String s) => _statusCtl.add(s);
 
   Future<List<UsbDevice>> listDevices() async => UsbSerial.listDevices();
@@ -63,12 +51,12 @@ class SerialService {
       );
 
       _status('Connected: ${_device?.deviceName ?? 'Unknown'} @ $baud bps');
-      _log(LogLevels.info, 'Connected to ${_device?.productName ?? _device?.deviceName ?? 'device'}');
+      logInfo('Connected to ${_device?.productName ?? _device?.deviceName ?? 'device'}');
 
       _listen();
     } catch (e) {
       _status('Failed to connect: $e');
-      _log(LogLevels.error, 'Error: $e');
+      logError('Error: $e');
     }
   }
 
@@ -86,11 +74,12 @@ class SerialService {
         _rawCtl.add(trimmed);
         _parseMaybePoint(trimmed);
       }
+      logRx(buffer);
     }, onError: (e) {
-      _log(LogLevels.error, 'Serial error: $e');
+      logError('Serial error: $e');
       _status('Serial error');
     }, onDone: () {
-      _log(LogLevels.info, 'Serial stream closed');
+      logInfo('Serial stream closed');
       _status('Disconnected');
     });
   }
@@ -124,12 +113,12 @@ class SerialService {
 
   Future<void> sendText(String s) async {
     if (_port == null) {
-      _log(LogLevels.warn, 'Send failed: not connected');
+      logWarn('Send failed: not connected');
       return;
     }
     final bytes = Uint8List.fromList(utf8.encode(s));
     await _port!.write(bytes);
-    _log(LogLevels.received, '> $s');
+    logSnt('> $s');
   }
 
   Future<void> disconnect() async {

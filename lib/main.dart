@@ -20,12 +20,16 @@ Future<void> main() async {
   // FMTC v10+ initialisation (backend) + create a store named "OSM"
   await fmtc.FMTCObjectBoxBackend().initialise();
   await fmtc.FMTCStore('OSM').manage.create();
+  final appState = AppState();
+  await appState.init();
 
-  runApp(const MyApp());
+  runApp(MyApp(appState: appState));
 }
 
 class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+  const MyApp({super.key, required this.appState});
+  final AppState appState;
+
   @override
   Widget build(BuildContext context) {
     return MultiProvider(

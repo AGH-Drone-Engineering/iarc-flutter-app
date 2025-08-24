@@ -8,12 +8,6 @@ import '../services/global_log.dart'; // GlobalLog + LogLevels + logs list
 import '../state/app_state.dart';     // For connectionStatus
 
 // Use Color (works for both MaterialColor and plain Color)
-final Map<LogLevels, Color> colorMap = {
-  LogLevels.warn: Colors.yellow,
-  LogLevels.error: Colors.red,
-  LogLevels.info: Colors.grey,
-  LogLevels.received: Colors.green,
-};
 
 class LogsTab extends StatelessWidget {
   const LogsTab({super.key});
