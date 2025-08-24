@@ -10,11 +10,20 @@ dependencies:
   flutter:
     sdk: flutter
   usb_serial: ^0.5.2
+  provider:
+  flutter_map:
+  latlong2:
+  flutter_map_tile_caching: ^10.0.0
+  geolocator:
+  flutter_compass:
+  flutter_map_location_marker:
+  speech_to_text:
+  shared_preferences:
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
-  flutter_lints: ^5.0.0
+  flutter_lints: ^6.0.0
 
 flutter:
   uses-material-design: true
