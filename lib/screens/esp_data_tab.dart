@@ -319,7 +319,7 @@ class _EspDataTabState extends State<EspDataTab> {
               Expanded(
                 child: DropdownButtonFormField<UsbDevice>(
                   isExpanded: true,
-                  value: _selected,
+                  initialValue: _selected,
                   hint: const Text('Select USB device'),
                   items: _devices.map((d) {
                     return DropdownMenuItem(
@@ -428,7 +428,7 @@ class _EspDataTabState extends State<EspDataTab> {
             children: [
               Expanded(
                 child: DropdownButtonFormField<CommandOption>(
-                  value: _cmd,
+                  initialValue: _cmd,
                   items: const [
                     DropdownMenuItem(
                       value: CommandOption.start,

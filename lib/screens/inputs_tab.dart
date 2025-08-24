@@ -34,8 +34,12 @@ class _InputsTabState extends State<InputsTab> {
 
   @override
   void dispose() {
-    for (final c in _latCtrls) c.dispose();
-    for (final c in _lonCtrls) c.dispose();
+    for (final c in _latCtrls) {
+      c.dispose();
+    }
+    for (final c in _lonCtrls) {
+      c.dispose();
+    }
     _singleLatCtrl.dispose();
     _singleLonCtrl.dispose();
     super.dispose();

@@ -5,7 +5,6 @@ import 'dart:typed_data';
 import 'package:latlong2/latlong.dart';
 import 'package:usb_serial/usb_serial.dart';
 
-import '../state/app_state.dart';
 import 'global_log.dart';
 
 class SerialService {

@@ -1,5 +1,4 @@
 // lib/screens/logs_tab.dart
-import 'dart:developer';
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';

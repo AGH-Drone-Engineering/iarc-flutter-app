@@ -1,6 +1,5 @@
 // lib/services/global_log.dart
 import 'dart:collection';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 /// Single source of truth for log levels.

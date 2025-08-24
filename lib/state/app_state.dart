@@ -131,7 +131,9 @@ class AppState extends ChangeNotifier {
   }
 
   void clearCorners() {
-    for (var i = 0; i < 4; i++) corners[i] = null;
+    for (var i = 0; i < 4; i++) {
+      corners[i] = null;
+    }
     _saveCorners();
     notifyListeners();
   }
@@ -180,7 +182,7 @@ class AppState extends ChangeNotifier {
       return a / 2.0;
     }
 
-    bool _onSeg(LatLng a, LatLng b, LatLng c) {
+    bool onSeg(LatLng a, LatLng b, LatLng c) {
       // c on segment ab (with bounding-box check)
       return (c.longitude <= (a.longitude > b.longitude ? a.longitude : b.longitude) &&
           c.longitude >= (a.longitude < b.longitude ? a.longitude : b.longitude) &&
@@ -190,36 +192,36 @@ class AppState extends ChangeNotifier {
               (b.latitude  - a.latitude)  * (c.longitude - a.longitude) ).abs() < 1e-12;
     }
 
-    int _orient(LatLng a, LatLng b, LatLng c) {
+    int orient(LatLng a, LatLng b, LatLng c) {
       final val = (b.latitude - a.latitude) * (c.longitude - b.longitude) -
           (b.longitude - a.longitude) * (c.latitude - b.latitude);
       if (val.abs() < 1e-12) return 0;
       return val > 0 ? 1 : 2; // 1: clockwise, 2: counterclockwise
     }
 
-    bool _segIntersect(LatLng p1, LatLng q1, LatLng p2, LatLng q2) {
-      final o1 = _orient(p1, q1, p2);
-      final o2 = _orient(p1, q1, q2);
-      final o3 = _orient(p2, q2, p1);
-      final o4 = _orient(p2, q2, q1);
+    bool segIntersect(LatLng p1, LatLng q1, LatLng p2, LatLng q2) {
+      final o1 = orient(p1, q1, p2);
+      final o2 = orient(p1, q1, q2);
+      final o3 = orient(p2, q2, p1);
+      final o4 = orient(p2, q2, q1);
 
       if (o1 != o2 && o3 != o4) return true; // general case
 
       // collinear special cases
-      if (o1 == 0 && _onSeg(p1, q1, p2)) return true;
-      if (o2 == 0 && _onSeg(p1, q1, q2)) return true;
-      if (o3 == 0 && _onSeg(p2, q2, p1)) return true;
-      if (o4 == 0 && _onSeg(p2, q2, q1)) return true;
+      if (o1 == 0 && onSeg(p1, q1, p2)) return true;
+      if (o2 == 0 && onSeg(p1, q1, q2)) return true;
+      if (o3 == 0 && onSeg(p2, q2, p1)) return true;
+      if (o4 == 0 && onSeg(p2, q2, q1)) return true;
 
       return false;
     }
 
-    bool _simpleQuad(List<LatLng> p) {
+    bool simpleQuad(List<LatLng> p) {
       // For 4 vertices, only non-adjacent pairs can cross:
       // edges (0-1) with (2-3) and (1-2) with (3-0)
       final a = p[0], b = p[1], c = p[2], d = p[3];
-      if (_segIntersect(a, b, c, d)) return false;
-      if (_segIntersect(b, c, d, a)) return false;
+      if (segIntersect(a, b, c, d)) return false;
+      if (segIntersect(b, c, d, a)) return false;
       return true;
     }
 
@@ -228,7 +230,7 @@ class AppState extends ChangeNotifier {
 
     for (final idx in perms) {
       var poly = [pts[idx[0]], pts[idx[1]], pts[idx[2]], pts[idx[3]]];
-      if (_simpleQuad(poly)) {
+      if (simpleQuad(poly)) {
         var area = polygonArea(poly);
         // Normalize orientation to CCW (positive area)
         if (area < 0) {
