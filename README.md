@@ -19,54 +19,53 @@ Po 20 minutach powinny pojawić się pliki .apk w releasie.
 Artefakty są dostępne przez 90 dni.
 
 # Opis datagramów TM/TC
-Każda wiadomość zaczyna się `^` a kończy `$`
 ## Koordynaty
 ### Telemetry
-`^$call_sgn;CRD_TM_START;$coord_amt$`
-`^$call_sgn;CRD_TM_POINT;$coord_id;$lat;$long$`
-`^$call_sgn;CRD_TM_END$`
+`$call_sgn;CRD_TM_START;$coord_amt`
+`$call_sgn;CRD_TM_POINT;$coord_id;$lat;$long`
+`$call_sgn;CRD_TM_END`
 
 `$call_sgn` - wartości: b1, b2, b3, b4 itd...
 `$coord_amt` - liczba min rozpoznanych przez drona
 `$coord_id` - dron każdemu punktowi przypisuje jakiś numer, od 1 w górę
 
 ### Telecommand
-`^$call_sgn;CRD_TC_START$` - dron `$call_sgn` powinien rozpocząć transmisje
+`$call_sgn;CRD_TC_START` - dron `$call_sgn` powinien rozpocząć transmisje
     Od razu po otrzymaniu każdy dron powinien przesłać CRD_TM_START z liczbą punktów
-`^$call_sgn;CRD_TC_RPT;$coord_id;$coord_id;...$` - powtarzanie punktów w razie błędów transmisji
+`$call_sgn;CRD_TC_RPT;$coord_id;$coord_id;...` - powtarzanie punktów w razie błędów transmisji
 
 ## Start dronów
 ### Telecommand
-`^$call_sgn;CRD_START$` - wzleć na hardcoded wysokość
+`$call_sgn;START` - wzleć na hardcoded wysokość
 ### Telemetry
-`^$call_sgn;CRD_START_ACK$`
+`$call_sgn;START_ACK`
 
 ## Przesłanie koordynatów pola (przed konkursem, przydatne do testów ig)
 ### Telecommand
-`^$call_sgn;CRD_CRD_SND;$lat1;$lon1;$lat2;$lon2;$lat3;$lon3;$lat4;$lon4$` - wzleć na wcześniej zadaną wysokość
+`$call_sgn;CRD_SND;$lat1;$lon1;$lat2;$lon2;$lat3;$lon3;$lat4;$lon4` - wzleć na wcześniej zadaną wysokość
 ### Telemetry
-`^$call_sgn;CRD_CRD_ACK$`
+`$call_sgn;CRD_ACK`
 
 ## Przeleć x metrów
 ### Telecommand
-`^$call_sgn;CRD_FLY_TO;$lat;$lon$` - leć do `$lat` `$lon`
+`$call_sgn;FLY_TO;$lat;$lon` - leć do `$lat` `$lon`
 ### Telemetry
-`^$call_sgn;CRD_FLY_ACK$`
+`$call_sgn;FLY_ACK`
 
 ## Wzleć na x
 ### Telecommand
-`^$call_sgn;CRD_ALT_SET;$m$` - Wzleć na `$m` (float) metrów. 
+`$call_sgn;ALT_SET;$m` - Wzleć na `$m` (float) metrów. 
 ### Telemetry
-`^$call_sgn;CRD_ALT_ACK$`
+`$call_sgn;ALT_ACK`
 
 ## Rozpocznij misję
 ### Telecommand
-`^$call_sgn;CRD_MSN$` - Rozpocznij skanowanie
+`$call_sgn;MSN_START` - Rozpocznij skanowanie
 ### Telemetry
-`^$call_sgn;CRD_MSN_ACK$` 
+`$call_sgn;MSN_START_ACK` 
 
-## Rozpocznij misję
+## Wyląduj
 ### Telecommand
-`^$call_sgn;CRD_END$` - Power down
+`$call_sgn;MSN_END` - Power down
 ### Telemetry
-`^$call_sgn;CRD_END_ACK$` 
+`$call_sgn;MSN_END_ACK` 
