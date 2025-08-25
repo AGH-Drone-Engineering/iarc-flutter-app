@@ -30,13 +30,15 @@ Entirety of communication is performed using following syntax:\
 - `0x04` - bajer 4
 - `0x7F` - broadcast
 
-`COMMAND` is an int 8 with these values:
+`COMMAND` is an uint8 with these values:
 - `0x01` - start
 - `0x02` - crdSnd
 - `0x03` - flyTo
 - `0x04` - altSet
 - `0x05` - msnStart
 - `0x06` - end
+- `0x07` - prepare for test flight
+- `0x08` - prepare for mission
 - `OxFF` - reserved for ESP to APP communication
 
 ESP after receiving a command returns it to the app after flipping the initial bit (subtracting 128).
@@ -49,4 +51,4 @@ altSet has one 32-bit float containing altitude
 
 crdSnd has 4 pairs of 32-bit floats containing latitude and longitude of 4 points.
 
-ESP can, apart from ACKs, send a list of points. The command is then set as `0xFF`, after that there are pairs of float32.
+ESP can, apart from ACKs, send a point. The command is then set as `0xFF`, after that there are two 32-bit floats.
