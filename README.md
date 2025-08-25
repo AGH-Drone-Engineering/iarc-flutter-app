@@ -19,20 +19,34 @@ Należy zainstalować fluttera i wszystkie potrzebne komponenty.
 Po 20 minutach powinny pojawić się pliki .apk w releasie.
 Artefakty są dostępne przez 90 dni.
 
-# Komunikacja APP <-> ESP
-Całość komunikacji odbywa się wiadomościami o składni:
-`DEST/SRC;KOMENDA;ARG...`
+# APP <-> ESP Communication
+Entirety of communication is performed using following syntax:\
+`<DEST/SRC><COMMAND><ARG...>`
 
-`DEST` lub `SRC` może przyjmować wartości 1, 2, 3 i 4 - konkretne drony. Może też przyjąć wartość 0 (broadcast)
+`DEST/SRC` is an int8 with values from:
+- `0x01` - bajer 1
+- `0x02` - bajer 2
+- `0x03` - bajer 3
+- `0x04` - bajer 4
+- `0x7F` - broadcast
 
-ESP po odebraniu komendy odbija ją po serialu do apki z dopiskiem `ACK;` na początku wiadomości.
+`COMMAND` is an int 8 with these values:
+- `0x01` - start
+- `0x02` - crdSnd
+- `0x03` - flyTo
+- `0x04` - altSet
+- `0x05` - msnStart
+- `0x06` - end
+- `OxFF` - reserved for ESP to APP communication
 
-Koordynaty przychodzące są przesyłane przez ESP do apki w formacie`SRC;TM_POINTS;lat1;lon1;lat2;lon2...`
+ESP after receiving a command returns it to the app after flipping the initial bit (subtracting 128).
 
-## Komendy
-`START` - wznieś się
-`CRD_SND;lat1;lon1;...;lat4;lon4` - transmisja punktów granicznych pola misji
-`FLY_TO;lat;lon` - leć na te koordynaty
-`ALT_SET;m` - Wzleć na `m` metrów
-`MSN_START` - Rozpocznij misję
-`END` - power down
+start, msnStart and end are argumentless commands.
+
+flyTo has two 32-bit floats containing latitude and longitude
+
+altSet has one 32-bit float containing altitude
+
+crdSnd has 4 pairs of 32-bit floats containing latitude and longitude of 4 points.
+
+ESP can, apart from ACKs, send a list of points. The command is then set as `0xFF`, after that there are pairs of float32.
