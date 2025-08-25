@@ -2,28 +2,16 @@
 import 'dart:collection';
 import 'package:flutter/material.dart';
 
-/// Single source of truth for log levels.
-enum LogLevels { error, warn, info, received, sent }
+import '../models/log.dart';
 
 final Map<LogLevels, Color> colorMap = {
-  LogLevels.warn: Colors.yellow,
-  LogLevels.error: Colors.red,
+  LogLevels.warn: Colors.deepOrange,
+  LogLevels.error: Colors.red.shade900,
   LogLevels.info: Colors.grey,
   LogLevels.received: Colors.green,
   LogLevels.sent: Colors.purple
 };
 
-
-/// Log entry model.
-class Log {
-  final LogLevels level;
-  final String message;
-  final DateTime timestamp;
-  Log(this.level, this.message, [DateTime? ts])
-      : timestamp = ts ?? DateTime.now();
-}
-
-/// Global logger: keeps logs and notifies listeners on changes.
 class GlobalLog extends ChangeNotifier {
   GlobalLog({this.capacity = 500});
   final int capacity;
@@ -45,10 +33,8 @@ class GlobalLog extends ChangeNotifier {
   }
 }
 
-/// App-wide singleton instance.
 final GlobalLog globalLog = GlobalLog();
 
-/// Top-level helpers you can call from anywhere (no imports of ChangeNotifier needed).
 void addLog(LogLevels level, String message, [DateTime? ts]) =>
     globalLog.add(level, message, ts);
 void clearLogs() => globalLog.clear();

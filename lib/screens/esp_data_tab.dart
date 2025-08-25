@@ -217,55 +217,77 @@ class _EspDataTabState extends State<EspDataTab> {
     _clearHeard();
   }
 
-  Future<double?> _getHeadingDegrees() async {
+  Future<double?> _getHeadingDegrees(AppState app) async {
     try {
       final ev = await FlutterCompass.events
           ?.firstWhere((e) => e.heading != null && e.heading!.isFinite)
           .timeout(const Duration(milliseconds: 800));
-      if (ev?.heading != null && ev!.heading!.isFinite) return ev.heading;
+      if (ev?.heading != null && ev!.heading!.isFinite) {
+        app.headingDegrees = ev.heading;
+        return ev.heading;
+      }
     } catch (_) {}
     try {
       final pos = await Geolocator.getCurrentPosition();
-      if (pos.heading.isFinite && pos.heading >= 0) return pos.heading;
+      if (pos.heading.isFinite && pos.heading >= 0) {
+        app.headingDegrees = pos.heading;
+        return pos.heading;
+      }
     } catch (_) {}
     return null;
   }
 
-  Future<LatLng?> _getCurrentLatLng() async {
+  Future<LatLng?> _getCurrentLatLng(AppState app) async {
     try {
       final pos = await Geolocator.getCurrentPosition();
-      return LatLng(pos.latitude, pos.longitude);
+      final here = LatLng(pos.latitude, pos.longitude);
+      app.userLocation = here;
+      return here;
     } catch (_) {
       return null;
     }
   }
 
   Future<void> _sendFlyForwardWithTarget(AppState app, double meters) async {
-    final start = await _getCurrentLatLng();
-    if (start == null) {
-      _showSnack('Current location unavailable');
-      await app.serial.sendText('FLY_FORWARD ${_fmtNumber(meters)}\n');
-      return;
-    }
+    LatLng? start = await _getCurrentLatLng(app);
+    double? heading = await _getHeadingDegrees(app);
 
-    final heading = await _getHeadingDegrees(); // degrees 0..360
     if (heading == null) {
-      _showSnack('Heading (compass) unavailable');
-      await app.serial.sendText('FLY_FORWARD ${_fmtNumber(meters)}\n');
-      return;
+      if (app.headingDegrees != null) {
+        heading = app.headingDegrees;
+        logWarn("Heading unavailable, using last cached");
+      } else {
+        heading = 0.0;
+        logWarn("Heading unavailable, no previous heading found, using geo north");
+      }
     }
 
-    // latlong2: compute destination from start, distance (m), bearing (deg)
-    final dest = Distance().offset(start, meters, heading);
+    if (start == null) {
+      if (app.userLocation != null) {
+        start = app.userLocation;
+        logWarn(
+          'Location unavailable; using last known location (${start!.latitude.toStringAsFixed(5)}, ${start.longitude.toStringAsFixed(5)})'
+        );
+      } else if (app.singlePoint != null) {
+        start = app.singlePoint;
+        logWarn(
+          'Location unavailable; using singlePoint (${start!.latitude.toStringAsFixed(5)}, ${start.longitude.toStringAsFixed(5)})'
+        );
+      } else {
+        logError('Location unavailable, no last known location, no single point set. Command not sent');
+        return;
+      }
+    }
+
+    final dest = Distance().offset(start, meters, heading as num);
     app.singlePoint = dest;
-    // Keep the string protocol + also send a precise target coordinate
-    await app.serial.sendText('FLY_FORWARD ${dest.latitude.toStringAsFixed(7)},${dest.longitude.toStringAsFixed(7)}\n');
+    await app.serial.sendText('FLY_FORWARD ${dest.latitude.toStringAsFixed(7)},${dest.longitude.toStringAsFixed(7)}');
   }
 
   Future<void> _sendSelectedCommand(AppState app) async {
     switch (_cmd) {
       case CommandOption.start:
-        await app.serial.sendText('${_buildCmdString(CommandOption.start)}\n');
+        await app.serial.sendText(_buildCmdString(CommandOption.start));
         return;
       case CommandOption.setAltitude:
         final v = double.tryParse(_paramCtrl.text.trim());
@@ -273,7 +295,7 @@ class _EspDataTabState extends State<EspDataTab> {
           _showSnack('Enter a valid altitude (meters).');
           return;
         }
-        await app.serial.sendText('${_buildCmdString(CommandOption.setAltitude, v)}\n');
+        await app.serial.sendText(_buildCmdString(CommandOption.setAltitude, v));
         return;
       case CommandOption.flyForward:
         final v = double.tryParse(_paramCtrl.text.trim());
@@ -284,10 +306,10 @@ class _EspDataTabState extends State<EspDataTab> {
         await _sendFlyForwardWithTarget(app, v); // <-- use sensor-derived target
         return;
       case CommandOption.land:
-        await app.serial.sendText('${_buildCmdString(CommandOption.land)}\n');
+        await app.serial.sendText(_buildCmdString(CommandOption.land));
         return;
       case CommandOption.proceed:
-        await app.serial.sendText('${_buildCmdString(CommandOption.proceed)}\n');
+        await app.serial.sendText(_buildCmdString(CommandOption.proceed));
         return;
     }
   }
@@ -484,7 +506,6 @@ class _EspDataTabState extends State<EspDataTab> {
           ),
           const SizedBox(height: 12),
 
-          // Action buttons: send selected command + send coords
           Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [

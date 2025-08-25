@@ -25,7 +25,8 @@ class SerialService {
 
   Future<List<UsbDevice>> listDevices() async => UsbSerial.listDevices();
 
-  Future<void> connect(UsbDevice device, {int baud = 115200}) async {
+  Future<void> connect(UsbDevice device, {int baud = 9600}) async {
+    logWarn("Connecting to: ${device.deviceName}");
     await disconnect();
     _device = device;
     try {
@@ -64,16 +65,14 @@ class SerialService {
     _port!.inputStream?.listen((Uint8List data) {
       final chunk = utf8.decode(data, allowMalformed: true);
       buffer += chunk;
-      // Split by newline. Keep remainder in buffer.
+      if (buffer.isEmpty) return;
       final parts = buffer.split(RegExp(r'\r?\n'));
       buffer = parts.removeLast();
       for (final line in parts) {
         final trimmed = line.trim();
         if (trimmed.isEmpty) continue;
-        _rawCtl.add(trimmed);
-        _parseMaybePoint(trimmed);
+        logRx(trimmed);
       }
-      logRx(buffer);
     }, onError: (e) {
       logError('Serial error: $e');
       _status('Serial error');
@@ -81,33 +80,6 @@ class SerialService {
       logInfo('Serial stream closed');
       _status('Disconnected');
     });
-  }
-
-  void _parseMaybePoint(String line) {
-    try {
-      if (line.startsWith('{')) {
-        final m = jsonDecode(line);
-        final latVal = m['lat'] ?? m['latitude'];
-        final lonVal = m['lon'] ?? m['lng'] ?? m['longitude'];
-        final lat = latVal is num ? latVal.toDouble() : double.tryParse('$latVal');
-        final lon = lonVal is num ? lonVal.toDouble() : double.tryParse('$lonVal');
-        if (lat != null && lon != null) {
-          _pointCtl.add(LatLng(lat, lon));
-          return;
-        }
-      }
-    } catch (_) {
-      // fall through to CSV try
-    }
-
-    final csv = line.split(',');
-    if (csv.length >= 2) {
-      final lat = double.tryParse(csv[0].trim());
-      final lon = double.tryParse(csv[1].trim());
-      if (lat != null && lon != null) {
-        _pointCtl.add(LatLng(lat, lon));
-      }
-    }
   }
 
   Future<void> sendText(String s) async {
