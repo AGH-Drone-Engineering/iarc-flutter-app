@@ -9,6 +9,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:provider/provider.dart';
 
+import '../models/message.dart';
 import '../state/app_state.dart';
 import '../widgets/ground_dots_layer.dart';
 
@@ -146,7 +147,7 @@ class _MapTabState extends State<MapTab> {
         points: app.orderedCorners, // keep your ordered corners if present
         borderColor: Colors.indigo,
         borderStrokeWidth: 3,
-        color: Colors.indigo.withOpacity(0.15),
+        color: Colors.indigo.withValues(alpha: 0.15),
       ),
     ]
         : const <Polygon>[];
@@ -180,9 +181,27 @@ class _MapTabState extends State<MapTab> {
 
             // 1m ground dots
             GroundDotsLayer(
-              points: app.espPoints,
+              points: app.espPoints[NodeId.drone1] ?? [],
               diameterMeters: 1.0,
-              color: Colors.red,
+              color: Colors.red.shade300,
+              minPixelDiameter: 3.0,
+            ),
+            GroundDotsLayer(
+              points: app.espPoints[NodeId.drone2] ?? [],
+              diameterMeters: 1.0,
+              color: Colors.greenAccent,
+              minPixelDiameter: 3.0,
+            ),
+            GroundDotsLayer(
+              points: app.espPoints[NodeId.drone3] ?? [],
+              diameterMeters: 1.0,
+              color: Colors.lightGreenAccent,
+              minPixelDiameter: 3.0,
+            ),
+            GroundDotsLayer(
+              points: app.espPoints[NodeId.drone4] ?? [],
+              diameterMeters: 1.0,
+              color: Colors.orange,
               minPixelDiameter: 3.0,
             ),
             GroundDotsLayer(
@@ -190,6 +209,7 @@ class _MapTabState extends State<MapTab> {
               diameterMeters: 1.0,
               color: Colors.purpleAccent,
               minPixelDiameter: 3.0,
+              innerColor: Colors.purpleAccent,
             ),
 
             if (_user != null)
@@ -198,9 +218,9 @@ class _MapTabState extends State<MapTab> {
                   CircleMarker(
                     point: _user!,
                     radius: userMarkerRadius,
-                    color: Colors.blueAccent.withOpacity(0.95),
+                    color: Colors.blueAccent.withValues(alpha: 0.95),
                     borderStrokeWidth: 2,
-                    borderColor: Colors.white,
+                    borderColor: Colors.black,
                   ),
                 ],
               ),
@@ -214,7 +234,7 @@ class _MapTabState extends State<MapTab> {
           child: Container(
             padding: const EdgeInsets.all(8),
             decoration: BoxDecoration(
-              color: Colors.black.withOpacity(0.6),
+              color: Colors.black.withValues(alpha: 0.6),
               borderRadius: BorderRadius.circular(12),
             ),
             child: Row(

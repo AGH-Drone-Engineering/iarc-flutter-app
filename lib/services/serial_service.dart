@@ -2,10 +2,16 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:flutter_esp_android_communication/models/message.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:usb_serial/usb_serial.dart';
 
 import 'global_log.dart';
+
+class PointWithAuthor {
+  late int author; //from NodeId
+  late LatLng point;
+}
 
 class SerialService {
   UsbPort? _port;
@@ -14,12 +20,14 @@ class SerialService {
   final _statusCtl = StreamController<String>.broadcast();
   final _rawCtl = StreamController<String>.broadcast();
   final _logsCtl = StreamController<String>.broadcast();
-  final _pointCtl = StreamController<LatLng>.broadcast();
+  final _pointCtl = StreamController<PointWithAuthor>.broadcast();
+  final _msgCtl = StreamController<Message>.broadcast();
 
   Stream<String> get statusStream => _statusCtl.stream;
   Stream<String> get rawStream => _rawCtl.stream;
-  Stream<LatLng> get pointStream => _pointCtl.stream;
+  Stream<PointWithAuthor> get pointStream => _pointCtl.stream;
   Stream<String> get logStream => _logsCtl.stream;
+  Stream<Message> get messageStream => _msgCtl.stream;
 
   void _status(String s) => _statusCtl.add(s);
 
@@ -61,18 +69,10 @@ class SerialService {
   }
 
   void _listen() {
-    String buffer = '';
     _port!.inputStream?.listen((Uint8List data) {
-      final chunk = utf8.decode(data, allowMalformed: true);
-      buffer += chunk;
-      if (buffer.isEmpty) return;
-      final parts = buffer.split(RegExp(r'\r?\n'));
-      buffer = parts.removeLast();
-      for (final line in parts) {
-        final trimmed = line.trim();
-        if (trimmed.isEmpty) continue;
-        logRx(trimmed);
-      }
+      logRx(data.toString());
+      final rx = Message.parse(data);
+      logRx("${rx.ack ? "ACK for" : ""}(${nodeIdToName[rx.node]}) ${rx}");
     }, onError: (e) {
       logError('Serial error: $e');
       _status('Serial error');
@@ -82,14 +82,15 @@ class SerialService {
     });
   }
 
-  Future<void> sendText(String s) async {
+  Future<void> send(Uint8List bytes) async {
     if (_port == null) {
       logWarn('Send failed: not connected');
       return;
     }
-    final bytes = Uint8List.fromList(utf8.encode(s));
+    final tx = Message.parse(bytes);
+    _msgCtl.add(tx);
+    logSnt(tx.hex);
     await _port!.write(bytes);
-    logSnt('> $s');
   }
 
   Future<void> disconnect() async {

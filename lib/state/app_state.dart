@@ -1,9 +1,11 @@
 // lib/state/app_state.dart
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
+import 'package:flutter_esp_android_communication/services/global_log.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../models/message.dart';
 import '../services/serial_service.dart';
 
 class AppState extends ChangeNotifier {
@@ -17,14 +19,16 @@ class AppState extends ChangeNotifier {
   Future<SharedPreferences> _ensurePrefs() async =>
       _prefs ??= await SharedPreferences.getInstance();
 
-  // Four corners (nullable until provided)
   final List<LatLng?> corners = List<LatLng?>.filled(4, null, growable: false);
 
-  // Optional single point (if you use it elsewhere)
   LatLng? singlePoint;
 
-  // ESP points received from serial
-  final List<LatLng> espPoints = [];
+  Map<int, List<LatLng>> espPoints = {
+    NodeId.drone1: [],
+    NodeId.drone2: [],
+    NodeId.drone3: [],
+    NodeId.drone4: []
+  };
 
   bool rotateWithCompass = true;
 
@@ -32,9 +36,10 @@ class AppState extends ChangeNotifier {
   String lastRaw = '';
   LatLng? userLocation;
   double? headingDegrees;
+  Message? lastSent;
+  Message? lastReceived;
 
   Future<void> init() async {
-    // Streams
     serial.statusStream.listen((s) {
       connectionStatus = s;
       notifyListeners();
@@ -44,7 +49,15 @@ class AppState extends ChangeNotifier {
       notifyListeners();
     });
     serial.pointStream.listen((p) {
-      espPoints.add(p);
+      try {
+        espPoints[p.author]?.add(p.point);
+      } catch (_) {
+        logError("Unknown drone id: ${p.author}");
+      }
+      notifyListeners();
+    });
+    serial.messageStream.listen((msg) {
+      lastSent = msg;
       notifyListeners();
     });
 
@@ -69,7 +82,6 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  // ---------- Persistence ----------
   Future<void> _loadCorners() async {
     final prefs = await _ensurePrefs();
     final s = prefs.getString(_kCornersKey);
@@ -153,13 +165,10 @@ class AppState extends ChangeNotifier {
   List<LatLng> get filledCorners => corners.whereType<LatLng>().toList();
   bool get hasFourCorners => corners.every((c) => c != null);
 
-  /// Ordered corners (CCW) forming a simple, non-self-intersecting quad.
-  /// If we can't compute (e.g., <4 points), returns the filled list as-is.
   List<LatLng> get orderedCorners {
     final pts = filledCorners;
     if (pts.length != 4) return pts;
 
-    // Generate all permutations of indices [0,1,2,3]
     final perms = <List<int>>[];
     void gen(List<int> curr, List<int> rem) {
       if (rem.isEmpty) {
@@ -183,7 +192,6 @@ class AppState extends ChangeNotifier {
     }
 
     bool onSeg(LatLng a, LatLng b, LatLng c) {
-      // c on segment ab (with bounding-box check)
       return (c.longitude <= (a.longitude > b.longitude ? a.longitude : b.longitude) &&
           c.longitude >= (a.longitude < b.longitude ? a.longitude : b.longitude) &&
           c.latitude  <= (a.latitude  > b.latitude  ? a.latitude  : b.latitude)  &&
@@ -244,18 +252,13 @@ class AppState extends ChangeNotifier {
       }
     }
 
-    // Fallback: if no simple ordering found (duplicated points etc.), return original
     return best ?? pts;
   }
 
   Future<void> sendCornersToEsp() async {
-    // Use ordered corners for transmission
     final pts = orderedCorners;
     if (pts.length != 4) return;
-    final payload = jsonEncode({
-      'type': 'polygon',
-      'points': pts.map((c) => [c.latitude, c.longitude]).toList(),
-    });
-    await serial.sendText('$payload\n');
+    final tx = MessageBuilder.crdSnd(dest: NodeId.broadcast, corners: pts);
+    await serial.send(tx);
   }
 }
