@@ -52,3 +52,11 @@ altSet has one 32-bit float containing altitude
 crdSnd has 4 pairs of 32-bit floats containing latitude and longitude of 4 points.
 
 ESP can, apart from ACKs, send a point. The command is then set as `0xFF`, after that there are two 32-bit floats.
+
+# todo
+Testy
+- test plot punktów
+
+Pierdoły:
+- Pokazywać na esp data tab confirmation
+- Pokazać ilość wykrytych dronów przez każdego drona
