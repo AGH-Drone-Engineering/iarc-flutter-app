@@ -113,7 +113,7 @@ class _EspDataTabState extends State<EspDataTab> {
       r'(?:(?:le[cć]|lec|jed[zź]|idzi[eę]|rusz|przesu[nń])\s+)?(?:do\s+prz[óo]du|naprz[óo]d|prosto)\s*(\d+(?:[\.,]\d+)?)(?:\s*(?:m|metr(?:y|ów|ow)?))?'
     );
     final fwdReEn = RegExp(
-      r'(?:(?:fly|go|move)\s+)?forward\s*(\d+(?:[\.,]\d+)?)(?:\s*(?:m|meter|meters))?'
+      r'(?:(?:fly|go|move)\s+)?forward\s(for)?(\d+(?:[\.,]\d+)?)(?:\s*(?:m|meter|meters))?'
     );
     if (fwdRePl.hasMatch(text) || fwdReEn.hasMatch(text)) {
       final v = pullNumber(fwdRePl) ?? pullNumber(fwdReEn);
@@ -178,7 +178,7 @@ class _EspDataTabState extends State<EspDataTab> {
       r'(?:przygotuj|got[oó]w(?:uj)?|uzbr[oó]j)\s*(?:do|na)?\s*misj[ieę]'
     );
     if (prepMissionPl.hasMatch(text) || prepMissionEn.hasMatch(text)) {
-      _cmd = CommandOption.prepareForTestFlight;
+      _cmd = CommandOption.prepareForMission;
       _paramCtrl.text = "";
       return null;
     }
