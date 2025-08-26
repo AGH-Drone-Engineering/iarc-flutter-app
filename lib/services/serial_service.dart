@@ -11,6 +11,8 @@ import 'global_log.dart';
 class PointWithAuthor {
   late int author; //from NodeId
   late LatLng point;
+
+  PointWithAuthor(this.author, this.point);
 }
 
 class SerialService {
@@ -33,7 +35,7 @@ class SerialService {
 
   Future<List<UsbDevice>> listDevices() async => UsbSerial.listDevices();
 
-  Future<void> connect(UsbDevice device, {int baud = 9600}) async {
+  Future<void> connect(UsbDevice device, {int baud = 115200}) async {
     logWarn("Connecting to: ${device.deviceName}");
     await disconnect();
     _device = device;
@@ -70,9 +72,22 @@ class SerialService {
 
   void _listen() {
     _port!.inputStream?.listen((Uint8List data) {
-      logRx(data.toString());
-      final rx = Message.parse(data);
-      logRx("${rx.ack ? "ACK for" : ""}(${nodeIdToName[rx.node]}) ${rx}");
+      if (data.isEmpty) return;
+      if (data.length > 10) {
+        logRx(utf8.decode(data));
+        return;
+      } else {
+        logRx(data.toString());
+        try {
+          final rx = Message.parse(data);
+          logRx("${rx.ack ? "ACK for" : ""}(${nodeIdToName[rx.node]}) $rx");
+          if (rx.command.byte == Command.telemetry.byte) {
+            _pointCtl.add(PointWithAuthor(rx.node, rx.points.first));
+          }
+        } on Exception catch (e) {
+          logError(e.toString());
+        }
+      }
     }, onError: (e) {
       logError('Serial error: $e');
       _status('Serial error');
@@ -96,6 +111,7 @@ class SerialService {
   Future<void> disconnect() async {
     try {
       await _port?.close();
+      logInfo("Disconnected ${_device?.deviceName}");
     } catch (_) {}
     _port = null;
     _device = null;

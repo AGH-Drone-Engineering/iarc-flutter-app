@@ -2,6 +2,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_esp_android_communication/models/message.dart';
 import 'package:flutter_esp_android_communication/services/global_log.dart';
+import 'package:flutter_esp_android_communication/widgets/drone_status_tile.dart';
 import 'package:latlong2/latlong.dart'; // LatLng, Distance
 import 'package:provider/provider.dart';
 import 'package:usb_serial/usb_serial.dart';
@@ -192,12 +193,7 @@ class _EspDataTabState extends State<EspDataTab> {
       _speechAvailable = await _speech!.initialize();
       if (!_speechAvailable) return;
     }
-
-    setState(() {
-      _heardText = '';
-      _parsedCmdString = null;
-      _parseError = null;
-    });
+    _clearHeard();
 
     await _speech!.listen(
       listenFor: const Duration(seconds: 8),
@@ -413,52 +409,16 @@ class _EspDataTabState extends State<EspDataTab> {
             onLongPress: () => _startVoiceCommand(app), // optional push-to-talk
           ),
           const SizedBox(height: 8),
-          if (_heardText.isNotEmpty || _parsedCmdString != null || _parseError != null)
-            Card(
-              elevation: 0,
-              color: Theme.of(context).colorScheme.surfaceContainerHighest,
-              child: Padding(
-                padding: const EdgeInsets.all(12),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    if (_heardText.isNotEmpty)
-                      Text('Heard: $_heardText',
-                          style: Theme.of(context).textTheme.bodyMedium),
-                    const SizedBox(height: 6),
-                    if (_parsedCmdString != null)
-                      Text('Parsed as: $_parsedCmdString',
-                          style: Theme.of(context)
-                              .textTheme
-                              .bodyMedium
-                              ?.copyWith(color: Colors.green)),
-                    if (_parseError != null)
-                      Text(_parseError!,
-                          style: Theme.of(context)
-                              .textTheme
-                              .bodyMedium
-                              ?.copyWith(color: Colors.red)),
-                    const SizedBox(height: 8),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.end,
-                      children: [
-                        OutlinedButton(
-                          onPressed: _clearHeard,
-                          child: const Text('Clear'),
-                        ),
-                        const SizedBox(width: 8),
-                        FilledButton.icon(
-                          onPressed:
-                          _parsedCmdString == null ? null : () => _clearHeard(),
-                          icon: const Icon(Icons.send),
-                          label: const Text('Send'),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            ),
+          if (_heardText.isNotEmpty)
+            Text('Heard: $_heardText',
+                style: Theme.of(context).textTheme.bodyMedium),
+          if (_parseError != null)
+            Text(_parseError!,
+                style: Theme.of(context)
+                    .textTheme
+                    .bodyMedium
+                    ?.copyWith(color: Colors.red)),
+          const SizedBox(height: 8),
           Row(
             children: [
               Expanded(
@@ -569,7 +529,6 @@ class _EspDataTabState extends State<EspDataTab> {
             ],
           ),
           const SizedBox(height: 12),
-
           Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
@@ -586,6 +545,23 @@ class _EspDataTabState extends State<EspDataTab> {
               ),
             ],
           ),
+          Row (
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Expanded(child: DroneStatusTile(lastMessageAt: app.lastSeen[NodeId.drone1], droneId: nodeIdToName[NodeId.drone1]!, points: app.espPoints[NodeId.drone1]!.length)),
+              const SizedBox(width: 12),
+              Expanded(child: DroneStatusTile(lastMessageAt: app.lastSeen[NodeId.drone2], droneId: nodeIdToName[NodeId.drone2]!, points: app.espPoints[NodeId.drone2]!.length))
+            ]
+          ),
+          const SizedBox(height: 12),
+          Row (
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Expanded(child: DroneStatusTile(lastMessageAt: app.lastSeen[NodeId.drone3], droneId: nodeIdToName[NodeId.drone3]!, points: app.espPoints[NodeId.drone3]!.length)),
+              const SizedBox(width: 12),
+              Expanded(child: DroneStatusTile(lastMessageAt: app.lastSeen[NodeId.drone4], droneId: nodeIdToName[NodeId.drone4]!, points: app.espPoints[NodeId.drone4]!.length))
+            ]
+          )
         ],
       ),
     );
