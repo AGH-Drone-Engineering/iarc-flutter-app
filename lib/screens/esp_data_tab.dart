@@ -95,51 +95,89 @@ class _EspDataTabState extends State<EspDataTab> {
       return null;
     }
 
-    final altRe = RegExp(
-        r'(?:set\s+)?(?:altitude|alt|height)\s*(?:to)?\s*(\d+(?:[\.,]\d+)?)');
-    if (altRe.hasMatch(text)) {
-      final v = pullNumber(altRe);
+    final altRePl = RegExp(
+      r'(?:ustaw\s+)?(?:wysoko(?:ść|sc)|wysokosc|wysokość\s*lotu|wysokosc\s*lotu|wys\.)\s*(?:na|do)?\s*(\d+(?:[\.,]\d+)?)'
+    );
+    final altReEn = RegExp(
+      r'(?:set\s+)?(?:altitude|alt|height)\s*(?:to)?\s*(\d+(?:[\.,]\d+)?)'
+    );
+    if (altRePl.hasMatch(text) || altReEn.hasMatch(text)) {
+      final v = pullNumber(altRePl) ?? pullNumber(altReEn);
       if (v == null) return 'Could not parse altitude value from STT';
       _cmd = CommandOption.setAltitude;
       _paramCtrl.text = v.toString();
       return null;
     }
 
-    final fwdRe = RegExp(
-        r'(?:(?:fly|go|move)\s+)?forward\s*(\d+(?:[\.,]\d+)?)(?:\s*(?:m|meter|meters))?');
-    if (fwdRe.hasMatch(text)) {
-      final v = pullNumber(fwdRe);
+    final fwdRePl = RegExp(
+      r'(?:(?:le[cć]|lec|jed[zź]|idzi[eę]|rusz|przesu[nń])\s+)?(?:do\s+prz[óo]du|naprz[óo]d|prosto)\s*(\d+(?:[\.,]\d+)?)(?:\s*(?:m|metr(?:y|ów|ow)?))?'
+    );
+    final fwdReEn = RegExp(
+      r'(?:(?:fly|go|move)\s+)?forward\s*(\d+(?:[\.,]\d+)?)(?:\s*(?:m|meter|meters))?'
+    );
+    if (fwdRePl.hasMatch(text) || fwdReEn.hasMatch(text)) {
+      final v = pullNumber(fwdRePl) ?? pullNumber(fwdReEn);
       if (v == null) return 'Could not parse distance value from STT';
       _cmd = CommandOption.flyForward;
       _paramCtrl.text = v.toString();
       return null;
     }
 
-    if (RegExp(r'\b(land|touch\s*down|descend)\b').hasMatch(text)) {
+    final landEn = RegExp(
+      r'\b(land|touch\s*down|descend)\b'
+    );
+    final landPl = RegExp(
+      r'\b(l[aą]duj|wyl[aą]duj|przyziemiaj|przyziemi[eę])\b'
+    );
+    if (landPl.hasMatch(text) || landEn.hasMatch(text)) {
       _cmd = CommandOption.land;
       _paramCtrl.text = "";
       return null;
     }
 
-    if (RegExp(r'\b(proceed|continue|resume)\b').hasMatch(text)) {
+    final missionEn = RegExp(
+      r'\b(proceed|continue|resume)\b'
+    );
+    final missionPl = RegExp(
+      r'\b(misja|kontynuuj|rozpocznij misję)\b'
+    );
+    if (missionPl.hasMatch(text) || missionEn.hasMatch(text)) {
       _cmd = CommandOption.proceed;
       _paramCtrl.text = "";
       return null;
     }
 
-    if (RegExp(r'\b(start|arm|begin)\b').hasMatch(text)) {
+    final startEn = RegExp(
+      r'\b(start|arm|begin)\b'
+    );
+    final startPl = RegExp(
+      r'\b(startuj|uzbr[óo]j|zacznij|rozpocznij)\b'
+    );
+    if (startPl.hasMatch(text) || startEn.hasMatch(text)) {
       _cmd = CommandOption.start;
       _paramCtrl.text = "";
       return null;
     }
 
-    if (RegExp(r'\b(?:prepare|prep|ready|arm)\s*(?:for\s*)?(?:test[-\s]*flight|pre[-\s]*flight|preflight)\b').hasMatch(text)) {
+    final prepTestEn = RegExp(
+      r'\b(?:prepare|prep|ready|arm)\s*(?:for\s*)?(?:test[-\s]*flight|pre[-\s]*flight|preflight)\b'
+    );
+    final prepTestPl = RegExp(
+      r'(?:przygotuj|uzbr[oó]j|got[oó]w(?:uj)?)\s*(?:do\s*)?(?:lotu?\s*testow(?:ego|y)|testowego\s*lotu|lotu?\s*pr[óo]bnego)'
+    );
+    if (prepTestPl.hasMatch(text) || prepTestEn.hasMatch(text)) {
       _cmd = CommandOption.prepareForTestFlight;
       _paramCtrl.text = "";
       return null;
     }
 
-    if (RegExp(r'\b(?:prepare|prep|ready)\s*(?:for\s*)?missions?\b').hasMatch(text)) {
+    final prepMissionEn = RegExp(
+      r'\b(?:prepare|prep|ready)\s*(?:for\s*)?missions?\b'
+    );
+    final prepMissionPl = RegExp(
+      r'(?:przygotuj|got[oó]w(?:uj)?|uzbr[oó]j)\s*(?:do|na)?\s*misj[ieę]'
+    );
+    if (prepMissionPl.hasMatch(text) || prepMissionEn.hasMatch(text)) {
       _cmd = CommandOption.prepareForTestFlight;
       _paramCtrl.text = "";
       return null;
