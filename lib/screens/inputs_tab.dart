@@ -28,6 +28,19 @@ class _InputsTabState extends State<InputsTab> {
   final TextEditingController _singleLatCtrl = TextEditingController();
   final TextEditingController _singleLonCtrl = TextEditingController();
 
+  void _clearSinglePoint(BuildContext context) {
+    _singleLatCtrl.text = "";
+    _singleLonCtrl.text = "";
+    context.read<AppState>().clearSinglePoint();
+  }
+  void _clearCorners(BuildContext context) {
+    for (int i = 0; i < 4; i++) {
+      _latCtrls[i].text = "";
+      _lonCtrls[i].text = "";
+    }
+    context.read<AppState>().clearCorners();
+  }
+
   // Busy flags for “use my location” buttons
   final List<bool> _cornerBusy = List<bool>.filled(4, false);
   bool _singleBusy = false;
@@ -235,7 +248,7 @@ class _InputsTabState extends State<InputsTab> {
               ),
               const SizedBox(width: 12),
               OutlinedButton.icon(
-                onPressed: () => context.read<AppState>().clearCorners(),
+                onPressed: () => _clearCorners(context),
                 icon: const Icon(Icons.clear),
                 label: const Text('Clear'),
               ),
@@ -297,7 +310,7 @@ class _InputsTabState extends State<InputsTab> {
               ),
               const SizedBox(width: 12),
               OutlinedButton.icon(
-                onPressed: () => context.read<AppState>().clearSinglePoint(),
+                onPressed: () => _clearSinglePoint(context),
                 icon: const Icon(Icons.location_off),
                 label: const Text('Clear Point'),
               ),
