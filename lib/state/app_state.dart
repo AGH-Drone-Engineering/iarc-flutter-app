@@ -30,6 +30,13 @@ class AppState extends ChangeNotifier {
     NodeId.drone4: []
   };
 
+  Map<int, DateTime?> lastSeen = {
+    NodeId.drone1: null,
+    NodeId.drone2: null,
+    NodeId.drone3: null,
+    NodeId.drone4: null
+  };
+
   bool rotateWithCompass = true;
 
   String connectionStatus = 'No device connected';
@@ -51,6 +58,7 @@ class AppState extends ChangeNotifier {
     serial.pointStream.listen((p) {
       try {
         espPoints[p.author]?.add(p.point);
+        lastSeen[p.author] = DateTime.now();
       } catch (_) {
         logError("Unknown drone id: ${p.author}");
       }

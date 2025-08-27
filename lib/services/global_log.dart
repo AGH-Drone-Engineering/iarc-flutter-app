@@ -15,9 +15,11 @@ final Map<LogLevels, Color> colorMap = {
 class GlobalLog extends ChangeNotifier {
   GlobalLog({this.capacity = 500});
   final int capacity;
+  bool _verbose = false;
+  bool get verbose => _verbose;
 
   final List<Log> _logs = [];
-  UnmodifiableListView<Log> get logs => UnmodifiableListView(_logs);
+  UnmodifiableListView<Log> get logs => _verbose ? UnmodifiableListView(_logs) : UnmodifiableListView(_logs.where((e) => e.level != LogLevels.info).toList());
 
   void add(LogLevels level, String message, [DateTime? ts]) {
     _logs.add(Log(level, message, ts));
@@ -25,6 +27,11 @@ class GlobalLog extends ChangeNotifier {
       _logs.removeRange(0, _logs.length - capacity);
     }
     notifyListeners(); // <-- UI gets rebuilt
+  }
+
+  void setVerbose(bool v) {
+    _verbose = v;
+    notifyListeners();
   }
 
   void clear() {
@@ -45,3 +52,4 @@ void logWarn(String m) => addLog(LogLevels.warn, m);
 void logError(String m) => addLog(LogLevels.error, m);
 void logRx(String m) => addLog(LogLevels.received, m);
 void logSnt(String m) => addLog(LogLevels.sent, m);
+

@@ -11,6 +11,8 @@ import 'global_log.dart';
 class PointWithAuthor {
   late int author; //from NodeId
   late LatLng point;
+
+  PointWithAuthor(this.author, this.point);
 }
 
 class SerialService {
@@ -23,6 +25,8 @@ class SerialService {
   final _pointCtl = StreamController<PointWithAuthor>.broadcast();
   final _msgCtl = StreamController<Message>.broadcast();
 
+  late Uint8List _buf = Uint8List(0);
+
   Stream<String> get statusStream => _statusCtl.stream;
   Stream<String> get rawStream => _rawCtl.stream;
   Stream<PointWithAuthor> get pointStream => _pointCtl.stream;
@@ -33,7 +37,7 @@ class SerialService {
 
   Future<List<UsbDevice>> listDevices() async => UsbSerial.listDevices();
 
-  Future<void> connect(UsbDevice device, {int baud = 9600}) async {
+  Future<void> connect(UsbDevice device, {int baud = 115200}) async {
     logWarn("Connecting to: ${device.deviceName}");
     await disconnect();
     _device = device;
@@ -70,9 +74,53 @@ class SerialService {
 
   void _listen() {
     _port!.inputStream?.listen((Uint8List data) {
-      logRx(data.toString());
-      final rx = Message.parse(data);
-      logRx("${rx.ack ? "ACK for" : ""}(${nodeIdToName[rx.node]}) ${rx}");
+      // if (_buf.isNotEmpty) {
+      //   logInfo("Buffer len: ${_buf.length}b, first byte: "
+      //       "${_buf.first.toRadixString(16).padLeft(2, '0')}, last: ${_buf.last.toRadixString(16).padLeft(2, '0')}");
+      // }
+      // logInfo("Data len: ${data.length}b, first byte: "
+      //    "${data.first.toRadixString(16).padLeft(2, '0')}, last: ${data.last.toRadixString(16).padLeft(2, '0')}");
+      List<int> bufList = _buf.toList();
+      bufList.addAll(data);
+      _buf = Uint8List.fromList(bufList);
+      //logRx("buf len: ${_buf.length}");
+      logInfo("Raw buf: $_buf");
+      List<Uint8List> messageQueue = [];
+      while (_buf.contains(0x0A)) {
+        int index = _buf.indexOf(0x0A);
+        logInfo("Found line feed at index: $index");
+        Uint8List msg = _buf.sublist(0, index);
+        if (index < _buf.length-1) {
+          _buf = _buf.sublist(index+1, _buf.length);
+        } else {
+          _buf = Uint8List(0);
+        }
+        messageQueue.add(msg);
+      }
+      logInfo("MQ: $messageQueue");
+      if (messageQueue.isEmpty) return;
+
+      for (Uint8List msg in messageQueue) {
+        if (msg.first == 0x5B) {
+          try {
+            logRx(utf8.decode(msg));
+          } on Exception catch(e) {
+            logError("Couldn't decode log as UTF8: $e");logInfo("Raw: ${msg.toString()}");
+          }
+        } else {
+          try {
+            final rx = Message.parse(msg, endian: Endian.big);
+            logRx("Received ${rx.ack ? "ACK for" : ""} $rx");
+            if (rx.command.byte == Command.telemetry.byte) {
+              _pointCtl.add(PointWithAuthor(rx.node, rx.points.first));
+            }
+          } on Exception catch (e) {
+            logError(e.toString());
+            logRx("Raw: ${msg.toString()}");
+            logInfo("utf8 representation: ${utf8.decode(msg)}");
+          }
+        }
+      }
     }, onError: (e) {
       logError('Serial error: $e');
       _status('Serial error');
@@ -90,12 +138,13 @@ class SerialService {
     final tx = Message.parse(bytes);
     _msgCtl.add(tx);
     logSnt(tx.hex);
-    await _port!.write(bytes);
+    await _port!.write(Uint8List.fromList([...bytes, 0x0A]));
   }
 
   Future<void> disconnect() async {
     try {
       await _port?.close();
+      logInfo("Disconnected ${_device?.deviceName}");
     } catch (_) {}
     _port = null;
     _device = null;

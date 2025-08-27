@@ -240,7 +240,7 @@ class MessageBuilder {
 
 void _assertDest(int dest) {
   if (!NodeId.isValid(dest)) {
-    throw ArgumentError('Invalid dest: 0x' + dest.toRadixString(16));
+    throw ArgumentError('Invalid dest: 0x${dest.toRadixString(16)}');
   }
 }
 
