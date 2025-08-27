@@ -1,4 +1,5 @@
 // lib/screens/esp_data_tab.dart
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_esp_android_communication/models/message.dart';
 import 'package:flutter_esp_android_communication/services/global_log.dart';
@@ -39,7 +40,6 @@ class _EspDataTabState extends State<EspDataTab> {
 
   // Last heard phrase + parsed + confirmable command
   String _heardText = '';
-  String? _parsedCmdString; // normalized string to send (e.g., "SET_ALTITUDE 50")
   String? _parseError;
 
   // Command dropdown + optional parameter
@@ -305,12 +305,12 @@ class _EspDataTabState extends State<EspDataTab> {
         await app.serial.send(MessageBuilder.start(dest: _target));
         return;
       case CommandOption.setAltitude:
-        await app.serial.send(MessageBuilder.altSet(dest: _target, meters: v!));
+        await app.serial.send(MessageBuilder.altSet(dest: _target, meters: v!, endian: Endian.big));
         return;
       case CommandOption.flyForward:
         LatLng? coord = await _latLngFromDistanceToUser(app, v!);
         if (coord == null) return;
-        await app.serial.send(MessageBuilder.flyTo(dest: _target, lat: coord.latitude, lon: coord.longitude));
+        await app.serial.send(MessageBuilder.flyTo(dest: _target, lat: coord.latitude, lon: coord.longitude, endian: Endian.big));
         return;
       case CommandOption.land:
         await app.serial.send(MessageBuilder.end(dest: _target));
@@ -330,7 +330,6 @@ class _EspDataTabState extends State<EspDataTab> {
   void _clearHeard() {
     setState(() {
       _heardText = '';
-      _parsedCmdString = null;
       _parseError = null;
     });
   }
