@@ -319,10 +319,10 @@ class _EspDataTabState extends State<EspDataTab> {
         await app.serial.send(MessageBuilder.msnStart(dest: _target));
         return;
       case CommandOption.prepareForTestFlight:
-        await app.serial.send(MessageBuilder.msnStart(dest: _target));
+        await app.serial.send(MessageBuilder.prepareForTest(dest: _target));
         return;
       case CommandOption.prepareForMission:
-        await app.serial.send(MessageBuilder.msnStart(dest: _target));
+        await app.serial.send(MessageBuilder.prepareForMission(dest: _target));
         return;
     }
   }
