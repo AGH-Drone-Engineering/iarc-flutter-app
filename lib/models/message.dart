@@ -37,7 +37,7 @@ class Command {
 
 
   static const List<Command> _all = [
-    start, crdSnd, flyTo, altSet, msnStart, end, telemetry,
+    start, crdSnd, flyTo, altSet, msnStart, end, telemetry, prepareMission, prepareTestFlight
   ];
 
   static Command fromByte(int b) {
@@ -83,6 +83,8 @@ class Message {
   final Endian endian;
 
   Message._(this.node, this.command, this.ack, this.payload, this.raw, this.endian);
+
+  static List<int> parsableLengths = [2, 6, 10, 34];
 
   factory Message.parse(Uint8List frame, {Endian endian = Endian.little}) {
     if (frame.length < 2) {
@@ -181,6 +183,11 @@ class Message {
         break;
     }
     return init;
+  }
+
+  static bool isValidMessageHeader(Uint8List msg) {
+    if (msg.length < 2) return false;
+    return NodeId.isValid(msg[0] & 0x7F) && Command._all.map((e) => e.byte).contains(msg[1]);
   }
 }
 
