@@ -30,7 +30,7 @@ class EspDataTab extends StatefulWidget {
   State<EspDataTab> createState() => _EspDataTabState();
 }
 
-class _EspDataTabState extends State<EspDataTab> {
+class _EspDataTabState extends State<EspDataTab> with AutomaticKeepAliveClientMixin {
   List<UsbDevice> _devices = [];
   UsbDevice? _selected;
 
@@ -45,6 +45,9 @@ class _EspDataTabState extends State<EspDataTab> {
   // Command dropdown + optional parameter
   CommandOption _cmd = CommandOption.start;
   int _target = NodeId.broadcast;
+
+  @override
+  bool get wantKeepAlive => true;
 
   final TextEditingController _paramCtrl = TextEditingController();
 
@@ -341,6 +344,7 @@ class _EspDataTabState extends State<EspDataTab> {
 
   @override
   Widget build(BuildContext context) {
+    super.build(context);
     final app = context.watch<AppState>();
     return Padding(
       padding: const EdgeInsets.all(16.0),
