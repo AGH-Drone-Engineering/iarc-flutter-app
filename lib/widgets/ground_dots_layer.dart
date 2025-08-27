@@ -16,7 +16,7 @@ class GroundDotsLayer extends StatelessWidget {
     this.minPixelDiameter = 3.0,
     this.maxPixelDiameter = 500.0,
 
-    this.innerDiameterMeters = 0.20, // 20 cm by default
+    this.innerDiameterMeters = 0.20,
     this.innerColor = Colors.red,
     this.innerMinPixelDiameter = 1.5,
     this.innerMaxPixelDiameter = 400.0,
