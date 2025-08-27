@@ -126,7 +126,11 @@ class SerialService {
 
       Uint8List msg = Uint8List(0);
       while (messageQueue.isNotEmpty) {
-        msg = Uint8List.fromList([...msg, 0x0A, ...messageQueue[0]]);
+        if (msg.isNotEmpty) {
+          msg = Uint8List.fromList([...msg, 0x0A, ...messageQueue[0]]);
+        } else {
+          msg = messageQueue[0].sublist(0);
+        }
         if (msg.first == 0x5B) {
           try {
             logRx(utf8.decode(msg));
