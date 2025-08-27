@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:flutter_esp_android_communication/models/message.dart';
@@ -125,29 +124,28 @@ class SerialService {
       logInfo("MQ: $messageQueue");
       if (messageQueue.isEmpty) return;
 
-
-      // TODO: the following code is shit. Please rewrite.
-      Uint8List msg = messageQueue[0].sublist(0);
-      if (msg.first == 0x5B) {
-        try {
-          logRx(utf8.decode(msg));
-        } on Exception catch(e) {
-          logError("Couldn't decode log as UTF8: $e");logInfo("Raw: ${msg.toString()}");
+      Uint8List msg = Uint8List(0);
+      while (messageQueue.isNotEmpty) {
+        msg = Uint8List.fromList([...msg, 0x0A, ...messageQueue[0]]);
+        if (msg.first == 0x5B) {
+          try {
+            logRx(utf8.decode(msg));
+          } on Exception catch (e) {
+            logError("Couldn't decode log as UTF8: $e");
+            logInfo("Raw: ${msg.toString()}");
+          }
+          messageQueue.removeAt(0);
+          msg = Uint8List(0);
+          continue;
         }
-        messageQueue.removeAt(0);
-        if (messageQueue.isEmpty) return;
-        msg = messageQueue[0].sublist(0);
-      }
-      var errMsg = tryParse(msg);
-      if (!Message.isValidMessageHeader(msg)) {
-        logError("${errMsg.$1}");
-        logInfo("Raw: $msg");
-        messageQueue.removeAt(0);
-        if (messageQueue.isEmpty) return;
-        msg = messageQueue[0].sublist(0);
-      }
-      while (true) { //holy fucking shit
-        errMsg = tryParse(msg);
+        var errMsg = tryParse(msg);
+        if (!Message.isValidMessageHeader(msg)) {
+          logError("${errMsg.$1}");
+          logInfo("Raw: $msg");
+          messageQueue.removeAt(0);
+          msg = Uint8List(0);
+          continue;
+        }
         if (errMsg.$2 != null) {
           final rx = errMsg.$2!;
           logRx("Received ${rx.ack ? "ACK for" : ""} $rx");
@@ -155,17 +153,14 @@ class SerialService {
             _pointCtl.add(PointWithAuthor(rx.node, rx.points.first));
           }
           messageQueue.removeAt(0);
-          if (messageQueue.isEmpty) return;
-          msg = messageQueue[0].sublist(0);
-        } else if (messageQueue.length > 1) {
-          messageQueue.removeAt(0);
-          msg = Uint8List.fromList([...msg, ...messageQueue[0]]);
-        } else {
-          _buf = Uint8List.fromList([...msg, ..._buf]);
-          return;
+          msg = Uint8List(0);
+          continue;
         }
+        messageQueue.removeAt(0);
       }
-      // end of shit code
+      if (messageQueue.isNotEmpty) {
+        _buf = Uint8List.fromList([...msg, 0x0A, ..._buf]);
+      }
     }, onError: (e) {
       logError('Serial error: $e');
       _status('Serial error');
