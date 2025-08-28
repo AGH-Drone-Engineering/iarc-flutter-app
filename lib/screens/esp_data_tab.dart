@@ -97,11 +97,40 @@ class _EspDataTabState extends State<EspDataTab> with AutomaticKeepAliveClientMi
     _lastCmdForCtrls = cmd;
   }
 
+  double? _parseSignedNum(String s) {
+    var t = s.trim().toLowerCase();
+
+    // Normalize unicode dashes to '-'
+    t = t.replaceFirst(RegExp(r'^[\u2212\u2012\u2013\u2014]'), '-'); // minus, figure, en, em
+
+    // Detect leading sign words/chars
+    bool neg = false;
+    if (RegExp(r'^\s*(?:minus|negative|ujemn(?:y|a|e))\b').hasMatch(t)) {
+      neg = true;
+      t = t.replaceFirst(RegExp(r'^\s*(?:minus|negative|ujemn(?:y|a|e))\b\s*'), '');
+    } else if (RegExp(r'^\s*(?:\+|plus|dodatni(?:a|e)?)\b').hasMatch(t)) {
+      // explicit positive
+      t = t.replaceFirst(RegExp(r'^\s*(?:\+|plus|dodatni(?:a|e)?)\b\s*'), '');
+    } else if (RegExp(r'^\s*[-]').hasMatch(t)) {
+      neg = true;
+      t = t.replaceFirst(RegExp(r'^\s*[-]\s*'), '');
+    } else if (RegExp(r'^\s*[+]').hasMatch(t)) {
+      t = t.replaceFirst(RegExp(r'^\s*[+]\s*'), '');
+    }
+
+    // Decimal comma → dot
+    t = t.replaceAll(',', '.');
+
+    final v = double.tryParse(t);
+    if (v == null) return null;
+    return neg ? -v : v;
+  }
+
   // Assumes: Command.registeredCommands filled; Map<String, TextEditingController> _paramCtrls exists.
   String? _parseVoiceToCommand(AppState app, String phrase) {
     final text = phrase.toLowerCase().trim();
 
-    double? parseNum(String s) => double.tryParse(s.replaceAll(',', '.'));
+    double? parseNum(String s) => _parseSignedNum(s);
 
     for (final cmd in Command.registeredCommands.values) {
       if (cmd.voice.isEmpty) continue;
@@ -114,7 +143,7 @@ class _EspDataTabState extends State<EspDataTab> with AutomaticKeepAliveClientMi
         final tgt = _tryParseTargetFromVoice(text);
         if (tgt != null) app.setSelectedTarget(tgt);
 
-        _rebuildControllersFor(cmd);
+        _maybeRebuildCtrlsFor(cmd);
 
         for (final p in cmd.params) {
           (_paramCtrls[p.key] ??= TextEditingController()).clear();
@@ -128,7 +157,9 @@ class _EspDataTabState extends State<EspDataTab> with AutomaticKeepAliveClientMi
           }
         }
         if (nums.isEmpty) {
-          final g = RegExp(r'(\d+(?:[\.,]\d+)?)').firstMatch(text);
+          final g = RegExp(
+              r'((?:(?:[-\u2212\u2012\u2013\u2014])|(?:minus|negative|ujemn(?:y|a|e))|(?:\+|plus|dodatni(?:a|e)?))?\s*\d+(?:[\.,]\d+)?)'
+          ).firstMatch(text);
           if (g != null) {
             final v = parseNum(g.group(1)!);
             if (v != null) nums.add(v);

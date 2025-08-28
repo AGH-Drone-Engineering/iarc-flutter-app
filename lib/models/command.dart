@@ -47,14 +47,37 @@ class Command {
       CommandParam.number(key: 'lng', label: 'Longitude'),
     ],
     voice: [
-      // EN: "lat 52.1 lon 21.0" / "latitude: 52.1, longitude: 21.0"
-      RegExp(r'(?:lat(?:itude)?)\s*[:=]?\s*([\-+]?\d+(?:[\.,]\d+)?)\s*(?:,|;|\s)\s*lon(?:gitude)?\s*[:=]?\s*([\-+]?\d+(?:[\.,]\d+)?)'),
-      // PL: "szer. 52.1 dl. 21.0" / "szerokość 52.1, długość 21.0"
-      RegExp(r'(?:szer(?:oko(?:ść|sc))?|szer\.)\s*[:=]?\s*([\-+]?\d+(?:[\.,]\d+)?)\s*(?:,|;|\s)\s*(?:d[łl]ugo(?:ść|sc)|d[łl]\.|dl\.)\s*[:=]?\s*([\-+]?\d+(?:[\.,]\d+)?)'),
-      // EN generic: "coordinates 52.1, 21.0" / "coords: 52.1 21.0"
-      RegExp(r'(?:coords?|coordinates)\s*[:=]?\s*([\-+]?\d+(?:[\.,]\d+)?)\s*[,;\s]\s*([\-+]?\d+(?:[\.,]\d+)?)'),
-      // PL generic: "współrzędne 52.1, 21.0" / "koordynaty: 52.1 21.0"
-      RegExp(r'(?:wsp[óo]łrz[ęe]dne|koordynaty)\s*[:=]?\s*([\-+]?\d+(?:[\.,]\d+)?)\s*[,;\s]\s*([\-+]?\d+(?:[\.,]\d+)?)'),
+      // EN: "lat -52.1 lon 21.0" / "latitude: minus 52.1, longitude: 21.0"
+      RegExp(
+          r'(?:lat(?:itude)?)\s*[:=]?\s*'
+          r'((?:(?:[-\u2212\u2012\u2013\u2014])|(?:minus|negative|ujemn(?:y|a|e))|(?:\+|plus|dodatni(?:a|e)?))?\s*\d+(?:[\.,]\d+)?)'
+          r'\s*(?:,|;|\s)\s*lon(?:gitude)?\s*[:=]?\s*'
+          r'((?:(?:[-\u2212\u2012\u2013\u2014])|(?:minus|negative|ujemn(?:y|a|e))|(?:\+|plus|dodatni(?:a|e)?))?\s*\d+(?:[\.,]\d+)?)'
+      ),
+
+      // PL: "szer. -52.1 dl. 21.0" / "szerokość: minus 52.1, długość: 21.0"
+      RegExp(
+          r'(?:szer(?:oko(?:ść|sc))?|szer\.)\s*[:=]?\s*'
+          r'((?:(?:[-\u2212\u2012\u2013\u2014])|(?:minus|negative|ujemn(?:y|a|e))|(?:\+|plus|dodatni(?:a|e)?))?\s*\d+(?:[\.,]\d+)?)'
+          r'\s*(?:,|;|\s)\s*(?:d[łl]ugo(?:ść|sc)|d[łl]\.|dl\.)\s*[:=]?\s*'
+          r'((?:(?:[-\u2212\u2012\u2013\u2014])|(?:minus|negative|ujemn(?:y|a|e))|(?:\+|plus|dodatni(?:a|e)?))?\s*\d+(?:[\.,]\d+)?)'
+      ),
+
+      // EN generic: "coordinates -52.1, 21.0" / "coords: minus 52.1 21.0"
+      RegExp(
+          r'(?:coords?|coordinates)\s*[:=]?\s*'
+          r'((?:(?:[-\u2212\u2012\u2013\u2014])|(?:minus|negative|ujemn(?:y|a|e))|(?:\+|plus|dodatni(?:a|e)?))?\s*\d+(?:[\.,]\d+)?)'
+          r'\s*[,;\s]\s*'
+          r'((?:(?:[-\u2212\u2012\u2013\u2014])|(?:minus|negative|ujemn(?:y|a|e))|(?:\+|plus|dodatni(?:a|e)?))?\s*\d+(?:[\.,]\d+)?)'
+      ),
+
+      // PL generic: "współrzędne -52.1, 21.0" / "koordynaty: minus 52.1 21.0"
+      RegExp(
+          r'(?:wsp[óo]łrz[ęe]dne|koordynaty)\s*[:=]?\s*'
+          r'((?:(?:[-\u2212\u2012\u2013\u2014])|(?:minus|negative|ujemn(?:y|a|e))|(?:\+|plus|dodatni(?:a|e)?))?\s*\d+(?:[\.,]\d+)?)'
+          r'\s*[,;\s]\s*'
+          r'((?:(?:[-\u2212\u2012\u2013\u2014])|(?:minus|negative|ujemn(?:y|a|e))|(?:\+|plus|dodatni(?:a|e)?))?\s*\d+(?:[\.,]\d+)?)'
+      ),
     ],
   );
 
@@ -100,16 +123,26 @@ class Command {
       CommandParam.number(key: 'angle', label: 'Angle (°)', signed: true),
     ],
     voice: [
-      // EN: "forward 30 m at  -90 degrees"
+      // EN: "forward 30 m at minus 90 degrees"
       RegExp(
-          r'(?:(?:fly|go|move)\s+)?forward\s*(\d+(?:[\.,]\d+)?)\s*(?:m|meter|meters)?\s*(?:at\s*)?(?:angle|bearing|heading)?\s*([\-+]?\d+(?:[\.,]\d+)?)(?:\s*(?:°|degrees|deg))?'
+          r'(?:(?:fly|go|move)\s+)?forward\s*'
+          r'((?:(?:[-\u2212\u2012\u2013\u2014])|(?:minus|negative|ujemn(?:y|a|e))|(?:\+|plus|dodatni(?:a|e)?))?\s*\d+(?:[\.,]\d+)?)'
+          r'\s*(?:m|meter|meters)?\s*(?:at\s*)?(?:angle|bearing|heading)?\s*'
+          r'((?:(?:[-\u2212\u2012\u2013\u2014])|(?:minus|negative|ujemn(?:y|a|e))|(?:\+|plus|dodatni(?:a|e)?))?\s*\d+(?:[\.,]\d+)?)'
+          r'(?:\s*(?:°|degrees|deg))?'
       ),
-      // PL: "do przodu 30 m kąt -90 stopni"
+
+      // PL: "do przodu 30 m kąt minus 90 stopni"
       RegExp(
-          r'(?:(?:le[cć]|lec|jed[zź]|idzi[eę]|rusz|przesu[nń])\s+)?(?:do\s+prz[óo]du|naprz[óo]d|prosto)\s*(\d+(?:[\.,]\d+)?)\s*(?:m|metr(?:y|ów|ow)?)?\s*(?:pod\s*k[ąa]tem|k[ąa]t|azymut)\s*([\-+]?\d+(?:[\.,]\d+)?)(?:\s*(?:°|stopni|deg))?'
+          r'(?:(?:le[cć]|lec|jed[zź]|idzi[eę]|rusz|przesu[nń])\s+)?(?:do\s+prz[óo]du|naprz[óo]d|prosto)\s*'
+          r'((?:(?:[-\u2212\u2012\u2013\u2014])|(?:minus|negative|ujemn(?:y|a|e))|(?:\+|plus|dodatni(?:a|e)?))?\s*\d+(?:[\.,]\d+)?)'
+          r'\s*(?:m|metr(?:y|ów|ow)?)?\s*(?:pod\s*k[ąa]tem|k[ąa]t|azymut)\s*'
+          r'((?:(?:[-\u2212\u2012\u2013\u2014])|(?:minus|negative|ujemn(?:y|a|e))|(?:\+|plus|dodatni(?:a|e)?))?\s*\d+(?:[\.,]\d+)?)'
+          r'(?:\s*(?:°|stopni|deg))?'
       ),
     ],
   );
+
 
   static Command setSpeed = Command(0x0B, "SET_SPEED", "Set speed",
     params: [
