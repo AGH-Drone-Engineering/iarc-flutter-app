@@ -1,11 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
-
-import 'package:flutter_esp_android_communication/models/message.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:usb_serial/usb_serial.dart';
 
+import '../models/message.dart';
 import '../models/command.dart';
 import 'global_log.dart';
 

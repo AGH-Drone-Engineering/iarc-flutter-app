@@ -1,9 +1,3 @@
-// lib/screens/inputs_tab.dart
-// Inputs tab with:
-// 1) "Rotate map with compass" toggle (persisted via AppState)
-// 2) 4× corner inputs
-// 3) Per-row "use my location" buttons (kept)
-// 4) Single point inputs + "use my location" button
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';

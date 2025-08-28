@@ -1,14 +1,14 @@
 // lib/screens/esp_data_tab.dart
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_esp_android_communication/models/message.dart';
-import 'package:flutter_esp_android_communication/services/global_log.dart';
-import 'package:flutter_esp_android_communication/widgets/drone_status_tile.dart';
 import 'package:provider/provider.dart';
 import 'package:usb_serial/usb_serial.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 
-import '../models/Drone.dart';
+import '../services/global_log.dart';
+import '../models/message.dart';
+import '../widgets/drone_status_tile.dart';
+import '../models/drone.dart';
 import '../models/command.dart';
 import '../state/app_state.dart';
 import '../widgets/voice_button.dart';
