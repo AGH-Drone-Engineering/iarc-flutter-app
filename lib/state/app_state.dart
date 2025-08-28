@@ -1,10 +1,12 @@
 // lib/state/app_state.dart
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
+import 'package:flutter_esp_android_communication/models/Drone.dart';
 import 'package:flutter_esp_android_communication/services/global_log.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../models/command.dart';
 import '../models/message.dart';
 import '../services/serial_service.dart';
 
@@ -23,19 +25,7 @@ class AppState extends ChangeNotifier {
 
   LatLng? singlePoint;
 
-  Map<int, List<LatLng>> espPoints = {
-    NodeId.drone1: [],
-    NodeId.drone2: [],
-    NodeId.drone3: [],
-    NodeId.drone4: []
-  };
-
-  Map<int, DateTime?> lastSeen = {
-    NodeId.drone1: null,
-    NodeId.drone2: null,
-    NodeId.drone3: null,
-    NodeId.drone4: null
-  };
+  Map<int, Drone> droneMap = Drone.registeredDronesMap;
 
   bool rotateWithCompass = true;
 
@@ -45,6 +35,30 @@ class AppState extends ChangeNotifier {
   double? headingDegrees;
   Message? lastSent;
   Message? lastReceived;
+
+  Command? _selectedCommand = Command.start;
+  int _selectedTarget = Drone.broadcast;
+
+  Command get selectedCommand {
+    Command.ensureRegistered();
+    return _selectedCommand ?? Command.start;
+  }
+
+  void setSelectedCommand(Command? cmd) {
+    if (_selectedCommand == cmd) return;
+    _selectedCommand = cmd;
+    notifyListeners();
+  }
+
+  void setSelectedTarget(int id) {
+    if (_selectedTarget == id) return;
+    _selectedTarget = id;
+    notifyListeners();
+  }
+
+  int get selectedTarget => _selectedTarget;
+
+
 
   Future<void> init() async {
     serial.statusStream.listen((s) {
@@ -57,8 +71,8 @@ class AppState extends ChangeNotifier {
     });
     serial.pointStream.listen((p) {
       try {
-        espPoints[p.author]?.add(p.point);
-        lastSeen[p.author] = DateTime.now();
+        droneMap[p.author]?.points.add(p.point);
+        droneMap[p.author]?.lastSeen = DateTime.now();
       } catch (_) {
         logError("Unknown drone id: ${p.author}");
       }
@@ -266,7 +280,7 @@ class AppState extends ChangeNotifier {
   Future<void> sendCornersToEsp() async {
     final pts = orderedCorners;
     if (pts.length != 4) return;
-    final tx = MessageBuilder.crdSnd(dest: NodeId.broadcast, corners: pts);
+    final tx = MessageBuilder.crdSnd(dest: Drone.broadcast, corners: pts);
     await serial.send(tx);
   }
 }

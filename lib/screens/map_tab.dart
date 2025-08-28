@@ -1,6 +1,8 @@
 // lib/screens/map_tab.dart
 import 'dart:async';
+import 'dart:io' show Platform;
 import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_compass/flutter_compass.dart';
 import 'package:flutter_map/flutter_map.dart';
@@ -9,7 +11,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:provider/provider.dart';
 
-import '../models/message.dart';
+import '../models/drone.dart';
 import '../state/app_state.dart';
 import '../widgets/ground_dots_layer.dart';
 
@@ -26,7 +28,7 @@ class _MapTabState extends State<MapTab> {
   StreamSubscription<CompassEvent>? _compassSub;
   StreamSubscription<Position>? _posSub;
   StreamSubscription<MapEvent>? _mapSub;
-  Timer? _recenterTimer; // NEW
+  Timer? _recenterTimer;
 
   double? _headingDeg;
   double _mapRotationDeg = 0;
@@ -34,7 +36,8 @@ class _MapTabState extends State<MapTab> {
   double _zoom = 2;
   double _centerLat = 0;
 
-  bool? _lastRotatePref; // NEW: to detect toggle changes
+  bool? _lastRotatePref;
+  bool _isUserPanning = false;
 
   @override
   void initState() {
@@ -52,17 +55,39 @@ class _MapTabState extends State<MapTab> {
       final h = event.heading;
       if (h != null && h.isFinite) {
         _headingDeg = h;
-        // Only rotate if the toggle is on
+
         final rotate = context.read<AppState>().rotateWithCompass;
         if (rotate) _rotateMapToHeading(h);
         setState(() {});
       }
     });
 
-    const settings = LocationSettings(accuracy: LocationAccuracy.best, distanceFilter: 1);
-    _posSub = Geolocator.getPositionStream(locationSettings: settings).listen((pos) {
+    // High-frequency, sub-second location updates
+    final locationSettings = Platform.isAndroid
+        ? AndroidSettings(
+      accuracy: LocationAccuracy.bestForNavigation,
+      distanceFilter: 0,
+      intervalDuration: Duration(milliseconds: 500),
+    )
+        : AppleSettings(
+      accuracy: LocationAccuracy.bestForNavigation,
+      distanceFilter: 0,
+      pauseLocationUpdatesAutomatically: false,
+      activityType: ActivityType.fitness,
+    );
+
+    _posSub = Geolocator.getPositionStream(locationSettings: locationSettings).listen((pos) {
       if (!mounted) return;
-      setState(() => _user = LatLng(pos.latitude, pos.longitude));
+      final next = LatLng(pos.latitude, pos.longitude);
+
+      setState(() => _user = next);
+
+      // Recenter on every GPS tick unless the user is actively panning
+      if (!_isUserPanning) {
+        _mapController.move(next, _zoom);
+      }
+
+      _recenterTimer?.cancel();
     });
 
     _mapSub = _mapController.mapEventStream.listen((evt) {
@@ -72,16 +97,18 @@ class _MapTabState extends State<MapTab> {
       _centerLat = cam.center.latitude;
       _mapRotationDeg = cam.rotation;
 
-      // Handle recentre after pan ended + 1s inactivity
-      if (evt is MapEventMoveStart || evt is MapEventMove) {
+      // Track panning state
+      if (evt is MapEventMoveStart) {
+        _isUserPanning = true;
         _recenterTimer?.cancel();
-      }
-      if (evt is MapEventMoveEnd) {
-        _recenterTimer?.cancel();
-        _recenterTimer = Timer(const Duration(seconds: 1), () {
-          if (!mounted) return;
-          if (_user != null) _mapController.move(_user!, _zoom);
-        });
+      } else if (evt is MapEventMove) {
+        _isUserPanning = true;
+      } else if (evt is MapEventMoveEnd) {
+        _isUserPanning = false;
+        // Optional snap-back when drag ends (kept for UX)
+        if (_user != null) {
+          _mapController.move(_user!, _zoom);
+        }
       }
 
       setState(() {});
@@ -122,7 +149,7 @@ class _MapTabState extends State<MapTab> {
     final desired = (headingDeg % 360 + 360) % 360;
     final diff = (desired - _mapRotationDeg).abs();
     if (diff >= 1.0) {
-      _mapController.rotate(desired);
+      _mapController.rotate(-desired);
     }
   }
 
@@ -144,7 +171,7 @@ class _MapTabState extends State<MapTab> {
     final polygon = app.hasFourCorners
         ? [
       Polygon(
-        points: app.orderedCorners, // keep your ordered corners if present
+        points: app.orderedCorners,
         borderColor: Colors.indigo,
         borderStrokeWidth: 3,
         color: Colors.indigo.withValues(alpha: 0.15),
@@ -159,6 +186,9 @@ class _MapTabState extends State<MapTab> {
     final oneMeterPx = 1.0 / mpp;
     double userMarkerPx = (oneMeterPx * 0.7).clamp(6.0, 18.0).toDouble();
     final userMarkerRadius = userMarkerPx / 2.0;
+
+    final drones = Drone.registeredDronesMap.values.toList()
+      ..sort((a, b) => a.id.compareTo(b.id));
 
     return Stack(
       children: [
@@ -180,38 +210,22 @@ class _MapTabState extends State<MapTab> {
             if (polygon.isNotEmpty) PolygonLayer(polygons: polygon),
 
             // 1m ground dots
-            GroundDotsLayer(
-              points: app.espPoints[NodeId.drone1] ?? [],
-              diameterMeters: 1.0,
-              color: Colors.red.shade300,
-              minPixelDiameter: 3.0,
-            ),
-            GroundDotsLayer(
-              points: app.espPoints[NodeId.drone2] ?? [],
-              diameterMeters: 1.0,
-              color: Colors.greenAccent,
-              minPixelDiameter: 3.0,
-            ),
-            GroundDotsLayer(
-              points: app.espPoints[NodeId.drone3] ?? [],
-              diameterMeters: 1.0,
-              color: Colors.lightGreenAccent,
-              minPixelDiameter: 3.0,
-            ),
-            GroundDotsLayer(
-              points: app.espPoints[NodeId.drone4] ?? [],
-              diameterMeters: 1.0,
-              color: Colors.orange,
-              minPixelDiameter: 3.0,
-            ),
-            GroundDotsLayer(
-              points: app.singlePoint != null ? [app.singlePoint!] : const [],
-              diameterMeters: 1.0,
-              color: Colors.purpleAccent,
-              minPixelDiameter: 3.0,
-              innerColor: Colors.purpleAccent,
-            ),
+            for (var i = 0; i < drones.length; i++)
+              GroundDotsLayer(
+                points: drones[i].points,
+                diameterMeters: 1.0,
+                color: drones[i].mineDisplayColor,
+                minPixelDiameter: 3.0,
+              ),
 
+            if (app.singlePoint != null)
+              GroundDotsLayer(
+                points: [app.singlePoint!],
+                diameterMeters: 1.0,
+                color: Colors.purpleAccent,
+                minPixelDiameter: 3.0,
+                innerColor: Colors.purpleAccent,
+              ),
             if (_user != null)
               CircleLayer(
                 circles: [

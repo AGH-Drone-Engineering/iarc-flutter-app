@@ -6,6 +6,7 @@ import 'package:flutter_esp_android_communication/models/message.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:usb_serial/usb_serial.dart';
 
+import '../models/command.dart';
 import 'global_log.dart';
 
 class PointWithAuthor {
@@ -154,7 +155,7 @@ class SerialService {
           final rx = errMsg.$2!;
           logRx("Received ${rx.ack ? "ACK for" : ""} $rx");
           if (rx.command.byte == Command.telemetry.byte) {
-            _pointCtl.add(PointWithAuthor(rx.node, rx.points.first));
+            _pointCtl.add(PointWithAuthor(rx.droneId, rx.points.first));
           }
           messageQueue.removeAt(0);
           msg = Uint8List(0);

@@ -4,25 +4,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter_esp_android_communication/models/message.dart';
 import 'package:flutter_esp_android_communication/services/global_log.dart';
 import 'package:flutter_esp_android_communication/widgets/drone_status_tile.dart';
-import 'package:latlong2/latlong.dart'; // LatLng, Distance
 import 'package:provider/provider.dart';
 import 'package:usb_serial/usb_serial.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
-import 'package:flutter_compass/flutter_compass.dart';
-import 'package:geolocator/geolocator.dart';
 
+import '../models/Drone.dart';
+import '../models/command.dart';
 import '../state/app_state.dart';
 import '../widgets/voice_button.dart';
-
-enum CommandOption {
-  start,
-  setAltitude, // requires numeric value (meters)
-  flyForward,  // requires numeric value (meters)
-  land,
-  proceed,
-  prepareForMission,
-  prepareForTestFlight
-}
 
 class EspDataTab extends StatefulWidget {
   const EspDataTab({super.key});
@@ -42,14 +31,12 @@ class _EspDataTabState extends State<EspDataTab> with AutomaticKeepAliveClientMi
   String _heardText = '';
   String? _parseError;
 
-  // Command dropdown + optional parameter
-  CommandOption _cmd = CommandOption.start;
-  int _target = NodeId.broadcast;
+  Command? _lastCmdForCtrls; // track to know when to rebuild controllers
+
+  final Map<String, TextEditingController> _paramCtrls = {};
 
   @override
   bool get wantKeepAlive => true;
-
-  final TextEditingController _paramCtrl = TextEditingController();
 
   Future<void> _refreshDevices(AppState app) async {
     _devices = await app.serial.listDevices();
@@ -66,128 +53,184 @@ class _EspDataTabState extends State<EspDataTab> with AutomaticKeepAliveClientMi
   @override
   void initState() {
     super.initState();
+    Command.ensureRegistered();
+    Drone.ensureRegistered();
     _speech = stt.SpeechToText();
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       // Init device list
       _refreshDevices(context.read<AppState>());
       // Init speech engine
       final ok = await _speech!.initialize(onStatus: (_) {}, onError: (_) {});
-      if (mounted) setState(() => _speechAvailable = ok);
+      if (mounted) {
+        setState(() => _speechAvailable = ok);
+        final cmd = context.read<AppState>().selectedCommand;
+        _rebuildControllersFor(cmd);
+        _lastCmdForCtrls = cmd;
+      }
     });
   }
 
   @override
   void dispose() {
-    _paramCtrl.dispose();
+    for (final c in _paramCtrls.values) {
+      c.dispose();
+    }
     super.dispose();
   }
 
-  bool get _requiresParam =>
-      _cmd == CommandOption.setAltitude || _cmd == CommandOption.flyForward;
+  void _rebuildControllersFor(Command? cmd) {
+    // Dispose old
+    for (final c in _paramCtrls.values) {
+      c.dispose();
+    }
+    _paramCtrls.clear();
 
-  String get _paramLabel =>
-      _cmd == CommandOption.setAltitude ? 'Altitude (m)' : 'Distance (m)';
+    if (cmd == null) return;
+    for (final p in cmd.params) {
+      _paramCtrls[p.key] = TextEditingController();
+    }
+  }
 
-  String? _parseVoiceToCommand(String phrase) {
+  void _maybeRebuildCtrlsFor(Command? cmd) {
+    if (identical(cmd, _lastCmdForCtrls)) return;
+    _rebuildControllersFor(cmd);
+    _lastCmdForCtrls = cmd;
+  }
+
+  double? _parseSignedNum(String s) {
+    var t = s.trim().toLowerCase();
+
+    // Normalize unicode dashes to '-'
+    t = t.replaceFirst(RegExp(r'^[\u2212\u2012\u2013\u2014]'), '-'); // minus, figure, en, em
+
+    // Detect leading sign words/chars
+    bool neg = false;
+    if (RegExp(r'^\s*(?:minus|negative|ujemn(?:y|a|e))\b').hasMatch(t)) {
+      neg = true;
+      t = t.replaceFirst(RegExp(r'^\s*(?:minus|negative|ujemn(?:y|a|e))\b\s*'), '');
+    } else if (RegExp(r'^\s*(?:\+|plus|dodatni(?:a|e)?)\b').hasMatch(t)) {
+      // explicit positive
+      t = t.replaceFirst(RegExp(r'^\s*(?:\+|plus|dodatni(?:a|e)?)\b\s*'), '');
+    } else if (RegExp(r'^\s*[-]').hasMatch(t)) {
+      neg = true;
+      t = t.replaceFirst(RegExp(r'^\s*[-]\s*'), '');
+    } else if (RegExp(r'^\s*[+]').hasMatch(t)) {
+      t = t.replaceFirst(RegExp(r'^\s*[+]\s*'), '');
+    }
+
+    // Decimal comma → dot
+    t = t.replaceAll(',', '.');
+
+    final v = double.tryParse(t);
+    if (v == null) return null;
+    return neg ? -v : v;
+  }
+
+  // Assumes: Command.registeredCommands filled; Map<String, TextEditingController> _paramCtrls exists.
+  String? _parseVoiceToCommand(AppState app, String phrase) {
     final text = phrase.toLowerCase().trim();
 
-    double? pullNumber(RegExp re) {
-      final m = re.firstMatch(text);
-      if (m != null && m.groupCount >= 1) {
-        return double.tryParse(m.group(1)!.replaceAll(',', '.'));
+    double? parseNum(String s) => _parseSignedNum(s);
+
+    for (final cmd in Command.registeredCommands.values) {
+      if (cmd.voice.isEmpty) continue;
+
+      for (final re in cmd.voice) {
+        final m = re.firstMatch(text);
+        if (m == null) continue;
+        app.setSelectedCommand(cmd);
+        // inside _parseVoiceToCommand, right after you set `_cmd = cmd;`
+        final tgt = _tryParseTargetFromVoice(text);
+        if (tgt != null) app.setSelectedTarget(tgt);
+
+        _maybeRebuildCtrlsFor(cmd);
+
+        for (final p in cmd.params) {
+          (_paramCtrls[p.key] ??= TextEditingController()).clear();
+        }
+        final nums = <double>[];
+        for (var i = 1; i <= m.groupCount; i++) {
+          final g = m.group(i);
+          if (g != null) {
+            final v = parseNum(g);
+            if (v != null) nums.add(v);
+          }
+        }
+        if (nums.isEmpty) {
+          final g = RegExp(
+              r'((?:(?:[-\u2212\u2012\u2013\u2014])|(?:minus|negative|ujemn(?:y|a|e))|(?:\+|plus|dodatni(?:a|e)?))?\s*\d+(?:[\.,]\d+)?)'
+          ).firstMatch(text);
+          if (g != null) {
+            final v = parseNum(g.group(1)!);
+            if (v != null) nums.add(v);
+          }
+        }
+        for (var i = 0; i < cmd.params.length && i < nums.length; i++) {
+          final key = cmd.params[i].key;
+          (_paramCtrls[key] ??= TextEditingController()).text = nums[i].toString();
+        }
+        if (cmd == Command.flyPolar &&
+            (_paramCtrls['dist']?.text.isNotEmpty ?? false) &&
+            (_paramCtrls['angle']?.text.isEmpty ?? true)) {
+          (_paramCtrls['angle'] ??= TextEditingController()).text = '0';
+        }
+
+        return null; // success
       }
-      return null;
-    }
-
-    final altRePl = RegExp(
-      r'(?:ustaw\s+)?(?:wysoko(?:ść|sc)|wysokosc|wysokość\s*lotu|wysokosc\s*lotu|wys\.)\s*(?:na|do)?\s*(\d+(?:[\.,]\d+)?)'
-    );
-    final altReEn = RegExp(
-      r'(?:set\s+)?(?:altitude|alt|height)\s*(?:to)?\s*(\d+(?:[\.,]\d+)?)'
-    );
-    if (altRePl.hasMatch(text) || altReEn.hasMatch(text)) {
-      final v = pullNumber(altRePl) ?? pullNumber(altReEn);
-      if (v == null) return 'Could not parse altitude value from STT';
-      _cmd = CommandOption.setAltitude;
-      _paramCtrl.text = v.toString();
-      return null;
-    }
-
-    final fwdRePl = RegExp(
-      r'(?:(?:le[cć]|lec|jed[zź]|idzi[eę]|rusz|przesu[nń])\s+)?(?:do\s+prz[óo]du|naprz[óo]d|prosto)\s*(\d+(?:[\.,]\d+)?)(?:\s*(?:m|metr(?:y|ów|ow)?))?'
-    );
-    final fwdReEn = RegExp(
-      r'(?:(?:fly|go|move)\s+)?forward\s(for)?(\d+(?:[\.,]\d+)?)(?:\s*(?:m|meter|meters))?'
-    );
-    if (fwdRePl.hasMatch(text) || fwdReEn.hasMatch(text)) {
-      final v = pullNumber(fwdRePl) ?? pullNumber(fwdReEn);
-      if (v == null) return 'Could not parse distance value from STT';
-      _cmd = CommandOption.flyForward;
-      _paramCtrl.text = v.toString();
-      return null;
-    }
-
-    final landEn = RegExp(
-      r'\b(land|touch\s*down|descend)\b'
-    );
-    final landPl = RegExp(
-      r'\b(l[aą]duj|wyl[aą]duj|przyziemiaj|przyziemi[eę])\b'
-    );
-    if (landPl.hasMatch(text) || landEn.hasMatch(text)) {
-      _cmd = CommandOption.land;
-      _paramCtrl.text = "";
-      return null;
-    }
-
-    final missionEn = RegExp(
-      r'\b(proceed|continue|resume)\b'
-    );
-    final missionPl = RegExp(
-      r'\b(misja|kontynuuj|rozpocznij misję)\b'
-    );
-    if (missionPl.hasMatch(text) || missionEn.hasMatch(text)) {
-      _cmd = CommandOption.proceed;
-      _paramCtrl.text = "";
-      return null;
-    }
-
-    final startEn = RegExp(
-      r'\b(start|arm|begin)\b'
-    );
-    final startPl = RegExp(
-      r'\b(startuj|uzbr[óo]j|zacznij|rozpocznij)\b'
-    );
-    if (startPl.hasMatch(text) || startEn.hasMatch(text)) {
-      _cmd = CommandOption.start;
-      _paramCtrl.text = "";
-      return null;
-    }
-
-    final prepTestEn = RegExp(
-      r'\b(?:prepare|prep|ready|arm)\s*(?:for\s*)?(?:test[-\s]*flight|pre[-\s]*flight|preflight)\b'
-    );
-    final prepTestPl = RegExp(
-      r'(?:przygotuj|uzbr[oó]j|got[oó]w(?:uj)?)\s*(?:do\s*)?(?:lotu?\s*testow(?:ego|y)|testowego\s*lotu|lotu?\s*pr[óo]bnego)'
-    );
-    if (prepTestPl.hasMatch(text) || prepTestEn.hasMatch(text)) {
-      _cmd = CommandOption.prepareForTestFlight;
-      _paramCtrl.text = "";
-      return null;
-    }
-
-    final prepMissionEn = RegExp(
-      r'\b(?:prepare|prep|ready)\s*(?:for\s*)?missions?\b'
-    );
-    final prepMissionPl = RegExp(
-      r'(?:przygotuj|got[oó]w(?:uj)?|uzbr[oó]j)\s*(?:do|na)?\s*misj[ieę]'
-    );
-    if (prepMissionPl.hasMatch(text) || prepMissionEn.hasMatch(text)) {
-      _cmd = CommandOption.prepareForMission;
-      _paramCtrl.text = "";
-      return null;
     }
 
     return 'Unrecognized command';
+  }
+
+  int? _tryParseTargetFromVoice(String text) {
+    final t = text.toLowerCase();
+
+    // 1) Broadcast / all drones
+    if (RegExp(r'\b(?:broadcast|all(?:\s+drones?)?|wszys(?:tkie|cy)(?:\s+drony?)?|do\s+wszystkich)\b')
+        .hasMatch(t)) {
+      return Drone.broadcast;
+    }
+
+    // 2) By exact registered name (dynamic)
+    for (final d in Drone.registeredDronesMap.values) {
+      final name = d.name.toLowerCase();
+      if (name.isNotEmpty && RegExp(r'\b' + RegExp.escape(name) + r'\b').hasMatch(t)) {
+        return d.id;
+      }
+    }
+
+    // 3) “drone/dron/unit #N”
+    final mNum = RegExp(r'\b(?:drone|dron|unit|uav|quad)\s*(?:no\.?|nr\.?|#)?\s*(\d+)\b').firstMatch(t);
+    if (mNum != null) {
+      final n = int.tryParse(mNum.group(1)!);
+      if (n != null && Drone.registeredDronesMap.containsKey(n)) return n;
+    }
+
+    // 4) Hex id like “0x03”
+    final mHex = RegExp(r'\b0x([0-9a-f]{1,2})\b').firstMatch(t);
+    if (mHex != null) {
+      final n = int.tryParse(mHex.group(1)!, radix: 16);
+      if (n != null && Drone.registeredDronesMap.containsKey(n)) return n;
+    }
+
+    // 5) Word numbers (“drone three”, “dron drugi”)
+    final mWord = RegExp(r'\b(?:drone|dron|unit)\s+([a-ząćęłńóśżź]+)\b').firstMatch(t);
+    if (mWord != null) {
+      final w = mWord.group(1)!;
+      const words = {
+        // EN
+        'one':1,'two':2,'three':3,'four':4,'five':5,'six':6,'seven':7,'eight':8,'nine':9,'ten':10,
+        // PL (cardinals + ordinals)
+        'jeden':1,'pierwszy':1,'dwa':2,'drugi':2,'trzy':3,'trzeci':3,'cztery':4,'czwarty':4,
+        'pięć':5,'piec':5,'piąty':5,'piaty':5,'sześć':6,'szesc':6,'szósty':6,'szosty':6,
+        'siedem':7,'siódmy':7,'siodmy':7,'osiem':8,'ósmy':8,'osmy':8,'dziewięć':9,'dziewiec':9,'dziewiąty':9,'dziewiaty':9,
+        'dziesięć':10,'dziesiec':10,'dziesiąty':10,'dziesiaty':10,
+      };
+      final n = words[w];
+      if (n != null && Drone.registeredDronesMap.containsKey(n)) return n;
+    }
+
+    return null; // no target found
   }
 
   Future<void> _startVoiceCommand(AppState app) async {
@@ -199,7 +242,7 @@ class _EspDataTabState extends State<EspDataTab> with AutomaticKeepAliveClientMi
     _clearHeard();
 
     await _speech!.listen(
-      listenFor: const Duration(seconds: 8),
+      listenFor: const Duration(seconds: 15),
       pauseFor: const Duration(seconds: 2),
       listenOptions: stt.SpeechListenOptions(
         partialResults: true,
@@ -210,125 +253,123 @@ class _EspDataTabState extends State<EspDataTab> with AutomaticKeepAliveClientMi
         if (!mounted) return;
         setState(() {
           _heardText = text;
-          final parsed = _parseVoiceToCommand(text);
-          _parseError = parsed;
+          _parseError = _parseVoiceToCommand(app, text);
         });
       },
     );
   }
 
-  Future<double?> _getHeadingDegrees(AppState app) async {
-    try {
-      final ev = await FlutterCompass.events
-          ?.firstWhere((e) => e.heading != null && e.heading!.isFinite)
-          .timeout(const Duration(milliseconds: 800));
-      if (ev?.heading != null && ev!.heading!.isFinite) {
-        app.headingDegrees = ev.heading;
-        return ev.heading;
-      }
-    } catch (_) {}
-    try {
-      final pos = await Geolocator.getCurrentPosition();
-      if (pos.heading.isFinite && pos.heading >= 0) {
-        app.headingDegrees = pos.heading;
-        return pos.heading;
-      }
-    } catch (_) {}
-    return null;
-  }
-
-  Future<LatLng?> _getCurrentLatLng(AppState app) async {
-    try {
-      final pos = await Geolocator.getCurrentPosition();
-      final here = LatLng(pos.latitude, pos.longitude);
-      app.userLocation = here;
-      return here;
-    } catch (_) {
-      return null;
-    }
-  }
-
-  Future<LatLng?> _latLngFromDistanceToUser(AppState app, double meters) async {
-    LatLng? start = await _getCurrentLatLng(app);
-    double? heading = await _getHeadingDegrees(app);
-
-    if (heading == null) {
-      if (app.headingDegrees != null) {
-        heading = app.headingDegrees;
-        logWarn("Heading unavailable, using last cached");
-      } else {
-        heading = 0.0;
-        logWarn("Heading unavailable, no previous heading found, using geo north");
-      }
-    }
-
-    if (start == null) {
-      if (app.userLocation != null) {
-        start = app.userLocation;
-        logWarn(
-          'Location unavailable; using last known location (${start!.latitude.toStringAsFixed(5)}, ${start.longitude.toStringAsFixed(5)})'
-        );
-      } else if (app.singlePoint != null) {
-        start = app.singlePoint;
-        logWarn(
-          'Location unavailable; using singlePoint (${start!.latitude.toStringAsFixed(5)}, ${start.longitude.toStringAsFixed(5)})'
-        );
-      } else {
-        logError('Location unavailable, no last known location, no single point set. Command not sent');
-        return null;
-      }
-    }
-
-    final dest = Distance().offset(start, meters, heading as num);
-    app.singlePoint = dest;
-    return dest;
-  }
-
   Future<void> _sendSelectedCommand(AppState app) async {
-    String args = "";
-    final argTrim = _paramCtrl.text.trim();
-    if (argTrim.isNotEmpty) {
-      args = ' (argument: $argTrim)';
-    }
-    final v = double.tryParse(argTrim);
-    if (v == null) {
-      if (_cmd == CommandOption.setAltitude) {
-        _showSnack('Enter a valid altitude (meters).');
-        return;
-      }
-      if (_cmd == CommandOption.flyForward) {
-        _showSnack('Enter a valid distance (meters).');
-        return;
-      }
-    }
-    logSnt('Sending ${_cmd.name} to ${nodeIdToName[_target]}$args');
+    final cmd = app.selectedCommand;
+    final target = app.selectedTarget;
 
-    switch (_cmd) {
-      case CommandOption.start:
-        await app.serial.send(MessageBuilder.start(dest: _target));
+    String args = '';
+    if (cmd.params.isNotEmpty) {
+      final parts = <String>[];
+      for (final p in cmd.params) {
+        final t = _paramCtrls[p.key]?.text.trim() ?? '';
+        if (t.isNotEmpty) parts.add('${p.label}: $t');
+      }
+      if (parts.isNotEmpty) args = ' (${parts.join(', ')})';
+    }
+
+    final parsed = <String, double>{};
+    for (final p in cmd.params) {
+      final raw = (_paramCtrls[p.key]?.text ?? '').trim();
+      final val = double.tryParse(raw.replaceAll(',', '.'));
+      if (raw.isEmpty || val == null) {
+        _showSnack('Enter a valid ${p.label}.');
         return;
-      case CommandOption.setAltitude:
-        await app.serial.send(MessageBuilder.altSet(dest: _target, meters: v!, endian: Endian.big));
+      }
+      parsed[p.key] = val;
+    }
+
+    final sndName = target  == Drone.broadcast
+        ? 'All drones'
+        : Drone.registeredDronesMap[target]?.name;
+    logSnt('Sending ${cmd.internalName} to $sndName$args');
+
+    switch (cmd) {
+      case Command(byte: 0x01): // START
+        await app.serial.send(MessageBuilder.start(dest: target));
         return;
-      case CommandOption.flyForward:
-        LatLng? coord = await _latLngFromDistanceToUser(app, v!);
-        if (coord == null) return;
-        await app.serial.send(MessageBuilder.flyTo(dest: _target, lat: coord.latitude, lon: coord.longitude, endian: Endian.big));
+
+      case Command(byte: 0x04): // ALT_SET
+        await app.serial.send(
+          MessageBuilder.altSet(
+            dest: target,
+            meters: parsed['alt']!, // from Command.altSet.params
+            endian: Endian.big,
+          ),
+        );
         return;
-      case CommandOption.land:
-        await app.serial.send(MessageBuilder.end(dest: _target));
+
+      case Command(byte: 0x0B): // SET_SPEED
+        await app.serial.send(
+          MessageBuilder.setSpeed(
+            dest: target,
+            speed: parsed['speed']!,
+            endian: Endian.big,
+          ),
+        );
         return;
-      case CommandOption.proceed:
-        await app.serial.send(MessageBuilder.msnStart(dest: _target));
+
+      case Command(byte: 0x03): // FLY_TO (lat/lng)
+        await app.serial.send(
+          MessageBuilder.flyTo(
+            dest: target,
+            lat: parsed['lat']!,
+            lon: parsed['lng']!,
+            endian: Endian.big,
+          ),
+        );
         return;
-      case CommandOption.prepareForTestFlight:
-        await app.serial.send(MessageBuilder.prepareForTest(dest: _target));
+
+      case Command(byte: 0x09): // FLY_POLAR (dist, angle → lat/lon)
+        await app.serial.send(
+          MessageBuilder.flyPolar(
+            dest: target,
+            dist: parsed['dist']!,
+            angle: parsed['angle']!,
+            endian: Endian.big,
+          ),
+        );
         return;
-      case CommandOption.prepareForMission:
-        await app.serial.send(MessageBuilder.prepareForMission(dest: _target));
+
+      case Command(byte: 0x05): // MSN_START (Proceed)
+        await app.serial.send(MessageBuilder.msnStart(dest: target));
+        return;
+
+      case Command(byte: 0x06): // END (Land)
+        await app.serial.send(MessageBuilder.end(dest: target));
+        return;
+
+      case Command(byte: 0x07): // PREP_TEST
+        await app.serial.send(MessageBuilder.prepareForTest(dest: target));
+        return;
+
+      case Command(byte: 0x08): // PREP_MSN
+        await app.serial.send(MessageBuilder.prepareForMission(dest: target));
+        return;
+
+      case Command(byte: 0x02): // CRD_SND
+        final pts = app.orderedCorners;
+        if (pts.length != 4) {
+          logError("User tried to send incomplete point list: $pts");
+          _showSnack("Not all points are provided!");
+          return;
+        }
+        await app.serial.send(MessageBuilder.crdSnd(dest: target, corners: pts));
+        return;
+
+      default:
+        logWarn(
+          'Unhandled command: ${cmd.internalName} (0x${cmd.byte.toRadixString(16)})',
+        );
         return;
     }
   }
+
 
   void _clearHeard() {
     setState(() {
@@ -345,228 +386,203 @@ class _EspDataTabState extends State<EspDataTab> with AutomaticKeepAliveClientMi
   @override
   Widget build(BuildContext context) {
     super.build(context);
+    Command.ensureRegistered();
+    Drone.ensureRegistered();
+
     final app = context.watch<AppState>();
-    return Padding(
-      padding: const EdgeInsets.all(16.0),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          // Device picker + refresh
-          Row(
-            children: [
-              Expanded(
-                child: DropdownButtonFormField<UsbDevice>(
-                  isExpanded: true,
-                  initialValue: _selected,
-                  hint: const Text('Select USB device'),
-                  items: _devices.map((d) {
-                    return DropdownMenuItem(
-                      value: d,
-                      child: Text(d.deviceName),
-                    );
-                  }).toList(),
-                  onChanged: (d) => setState(() => _selected = d),
-                ),
-              ),
-              const SizedBox(width: 8),
-              IconButton(
-                tooltip: 'Refresh devices',
-                onPressed: () => _refreshDevices(app),
-                icon: const Icon(Icons.refresh),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
+    final drones = Drone.registeredDronesMap.values.toList()
+        ..sort((a, b) => a.id.compareTo(b.id));
+    final commands = Command.visible.toList()
+      ..sort((a, b) => a.byte.compareTo(b.byte)); // stable order
 
-          // Connect/disconnect + status
-          Row(
-            children: [
-              ElevatedButton.icon(
-                onPressed:
-                _selected == null ? null : () => app.serial.connect(_selected!),
-                icon: const Icon(Icons.usb),
-                label: const Text('Connect'),
-              ),
-              const SizedBox(width: 8),
-              OutlinedButton.icon(
-                onPressed: () => app.serial.disconnect(),
-                icon: const Icon(Icons.link_off),
-                label: const Text('Disconnect'),
-              ),
-              const SizedBox(width: 8),
-              Flexible(
-                child: Text(
-                  app.connectionStatus,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 16),
+    _maybeRebuildCtrlsFor(app.selectedCommand);
 
-          // Voice button + parsed/confirm UI
-          VoiceButton(
-            available: _speechAvailable,
-            isListening: _speech?.isListening ?? false,
-            onPressed: () => _startVoiceCommand(app),
-            onLongPress: () => _startVoiceCommand(app), // optional push-to-talk
-          ),
-          const SizedBox(height: 8),
-          if (_heardText.isNotEmpty)
-            Text('Heard: $_heardText',
-                style: Theme.of(context).textTheme.bodyMedium),
-          if (_parseError != null)
-            Text(_parseError!,
-                style: Theme.of(context)
-                    .textTheme
-                    .bodyMedium
-                    ?.copyWith(color: Colors.red)),
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              Expanded(
-                child: DropdownButtonFormField<int>(
-                  initialValue: _target,
-                  items: [
-                    DropdownMenuItem(
-                      value: NodeId.broadcast,
-                      child: Text(nodeIdToName[NodeId.broadcast]!),
-                    ),
-                    DropdownMenuItem(
-                      value: NodeId.drone1,
-                      child: Text(nodeIdToName[NodeId.drone1]!),
-                    ),
-                    DropdownMenuItem(
-                      value: NodeId.drone2,
-                      child: Text(nodeIdToName[NodeId.drone2]!),
-                    ),
-                    DropdownMenuItem(
-                      value: NodeId.drone3,
-                      child: Text(nodeIdToName[NodeId.drone3]!),
-                    ),
-                    DropdownMenuItem(
-                      value: NodeId.drone4,
-                      child: Text(nodeIdToName[NodeId.drone4]!),
-                    ),
-                  ],
-                  onChanged: (c) {
-                    if (c == null) return;
-                    setState(() {
-                      _target = c;
-                    });
-                  },
-                  decoration: const InputDecoration(
-                    labelText: 'Target',
-                    border: OutlineInputBorder(),
+    return SafeArea(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(16),
+        keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // Device picker + refresh
+            Row(
+              children: [
+                Expanded(
+                  child: DropdownButtonFormField<UsbDevice>(
+                    isExpanded: true,
+                    initialValue: _selected,
+                    hint: const Text('Select USB device'),
+                    items: _devices.map((d) {
+                      return DropdownMenuItem(
+                        value: d,
+                        child: Text(d.deviceName),
+                      );
+                    }).toList(),
+                    onChanged: (d) => setState(() => _selected = d),
                   ),
                 ),
-              )
-            ]
-          ),
-          const SizedBox(height: 16),
-          // Dropdown of commands + conditional parameter input
-          Row(
-            children: [
-              Expanded(
-                child: DropdownButtonFormField<CommandOption>(
-                  initialValue: _cmd,
-                  items: const [
-                    DropdownMenuItem(
-                      value: CommandOption.start,
-                      child: Text('Start'),
-                    ),
-                    DropdownMenuItem(
-                      value: CommandOption.setAltitude,
-                      child: Text('Set alt. to'),
-                    ),
-                    DropdownMenuItem(
-                      value: CommandOption.flyForward,
-                      child: Text('Fly forward'),
-                    ),
-                    DropdownMenuItem(
-                      value: CommandOption.land,
-                      child: Text('Land'),
-                    ),
-                    DropdownMenuItem(
-                      value: CommandOption.proceed,
-                      child: Text('Proceed'),
-                    ),
-                    DropdownMenuItem(
-                      value: CommandOption.prepareForMission,
-                      child: Text('Prep mission'),
-                    ),
-                    DropdownMenuItem(
-                      value: CommandOption.prepareForTestFlight,
-                      child: Text('Prep test'),
-                    ),
-                  ],
-                  onChanged: (c) {
-                    if (c == null) return;
-                    setState(() {
-                      _cmd = c;
-                      if (!_requiresParam) _paramCtrl.clear();
-                    });
-                  },
-                  decoration: const InputDecoration(
-                    labelText: 'Command',
-                    border: OutlineInputBorder(),
+                const SizedBox(width: 8),
+                IconButton(
+                  tooltip: 'Refresh devices',
+                  onPressed: () => _refreshDevices(app),
+                  icon: const Icon(Icons.refresh),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+
+            // Connect/disconnect + status
+            Row(
+              children: [
+                ElevatedButton.icon(
+                  onPressed:
+                  _selected == null ? null : () => app.serial.connect(_selected!),
+                  icon: const Icon(Icons.usb),
+                  label: const Text('Connect'),
+                ),
+                const SizedBox(width: 8),
+                OutlinedButton.icon(
+                  onPressed: () => app.serial.disconnect(),
+                  icon: const Icon(Icons.link_off),
+                  label: const Text('Disconnect'),
+                ),
+                const SizedBox(width: 8),
+                Flexible(
+                  child: Text(
+                    app.connectionStatus,
+                    overflow: TextOverflow.ellipsis,
                   ),
                 ),
-              ),
-              const SizedBox(width: 8),
-              if (_requiresParam)
-                SizedBox(
-                  width: 160,
-                  child: TextField(
-                    controller: _paramCtrl,
-                    decoration: InputDecoration(
-                      labelText: _paramLabel,
-                      border: const OutlineInputBorder(),
+              ],
+            ),
+            const SizedBox(height: 16),
+
+            // Voice button + parsed/confirm UI
+            VoiceButton(
+              available: _speechAvailable,
+              isListening: _speech?.isListening ?? false,
+              onPressed: () => _startVoiceCommand(app),
+              onLongPress: () => _startVoiceCommand(app), // optional push-to-talk
+            ),
+            const SizedBox(height: 8),
+            if (_heardText.isNotEmpty)
+              Text('Heard: $_heardText',
+                  style: Theme.of(context).textTheme.bodyMedium),
+            if (_parseError != null)
+              Text(_parseError!,
+                  style: Theme.of(context)
+                      .textTheme
+                      .bodyMedium
+                      ?.copyWith(color: Colors.red)),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: DropdownButtonFormField<int>(
+                    initialValue: app.selectedTarget,
+                    items: [
+                      const DropdownMenuItem(value: Drone.broadcast, child: Text('All drones')),
+                      for (final d in drones) DropdownMenuItem(value: d.id, child: Text(d.name)),
+                    ],
+                    onChanged: (id) {
+                      if (id == null) return;
+                      app.setSelectedTarget(id);
+                    },
+                    decoration: const InputDecoration(
+                      labelText: 'Target',
+                      border: OutlineInputBorder(),
                     ),
-                    keyboardType: const TextInputType.numberWithOptions(
-                      signed: false,
-                      decimal: true,
+                  ),
+                )
+              ]
+            ),
+            const SizedBox(height: 16),
+            // Dropdown of commands + conditional parameter input
+            Row(
+              children: [
+                Expanded(
+                  child: DropdownButtonFormField<Command>(
+                    initialValue: app.selectedCommand,
+                    items: [
+                      for (final c in commands)
+                        DropdownMenuItem(
+                          value: c,
+                          child: Text(c.displayName),
+                        ),
+                    ],
+                    onChanged: (c) {
+                      app.setSelectedCommand(c);
+                      _rebuildControllersFor(c);
+                    },
+                    decoration: const InputDecoration(
+                      labelText: 'Command',
+                      border: OutlineInputBorder(),
                     ),
                   ),
                 ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              FilledButton.icon(
+                const SizedBox(width: 8),
+                // Dynamic parameter inputs (0..n)
+                if ((app.selectedCommand.params.isNotEmpty))
+                  Flexible(
+                    child: Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        for (final p in app.selectedCommand.params)
+                          SizedBox(
+                            width: 160,
+                            child: TextField(
+                              controller: _paramCtrls[p.key],
+                              decoration: InputDecoration(
+                                labelText: p.label,
+                                border: const OutlineInputBorder(),
+                              ),
+                              keyboardType: const TextInputType.numberWithOptions(
+                                signed: true,  // we'll restrict with inputFormatters below
+                                decimal: true,
+                              ),
+                              inputFormatters: [
+                                // Optional: lightly constrain numeric inputs
+                                // You can add a more robust formatter per p.signed/p.decimal
+                              ],
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
                 onPressed: () => _sendSelectedCommand(app),
                 icon: const Icon(Icons.send),
                 label: const Text('Send Command'),
+              )
+            ),
+            GridView.builder(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: 2,
+                crossAxisSpacing: 12,
+                mainAxisSpacing: 12,
+                childAspectRatio: 2, // tweak to match your tile shape
               ),
-              const SizedBox(width: 12),
-              OutlinedButton.icon(
-                onPressed: () => app.sendCornersToEsp(),
-                icon: const Icon(Icons.share_location),
-                label: const Text('Send Coords'),
-              ),
-            ],
-          ),
-          Row (
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Expanded(child: DroneStatusTile(lastMessageAt: app.lastSeen[NodeId.drone1], droneId: nodeIdToName[NodeId.drone1]!, points: app.espPoints[NodeId.drone1]!.length)),
-              const SizedBox(width: 12),
-              Expanded(child: DroneStatusTile(lastMessageAt: app.lastSeen[NodeId.drone2], droneId: nodeIdToName[NodeId.drone2]!, points: app.espPoints[NodeId.drone2]!.length))
-            ]
-          ),
-          const SizedBox(height: 12),
-          Row (
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Expanded(child: DroneStatusTile(lastMessageAt: app.lastSeen[NodeId.drone3], droneId: nodeIdToName[NodeId.drone3]!, points: app.espPoints[NodeId.drone3]!.length)),
-              const SizedBox(width: 12),
-              Expanded(child: DroneStatusTile(lastMessageAt: app.lastSeen[NodeId.drone4], droneId: nodeIdToName[NodeId.drone4]!, points: app.espPoints[NodeId.drone4]!.length))
-            ]
-          )
-        ],
-      ),
+              itemCount: drones.length,
+              itemBuilder: (context, index) {
+                final d = drones[index];
+                return DroneStatusTile(
+                  lastMessageAt: d.lastSeen,
+                  droneId: d.name,
+                  points: d.points.length,
+                );
+              },
+            )
+          ],
+        ),
+      )
     );
   }
 }
