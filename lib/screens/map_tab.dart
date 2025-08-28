@@ -35,6 +35,10 @@ class _MapTabState extends State<MapTab> {
   double _centerLat = 0;
 
   bool? _lastRotatePref; // NEW: to detect toggle changes
+  bool? _lastRotatePref;
+
+  // NEW: follow-user gating while panning
+  bool _isUserPanning = false;
 
   @override
   void initState() {
@@ -52,17 +56,39 @@ class _MapTabState extends State<MapTab> {
       final h = event.heading;
       if (h != null && h.isFinite) {
         _headingDeg = h;
-        // Only rotate if the toggle is on
+
         final rotate = context.read<AppState>().rotateWithCompass;
         if (rotate) _rotateMapToHeading(h);
         setState(() {});
       }
     });
 
-    const settings = LocationSettings(accuracy: LocationAccuracy.best, distanceFilter: 1);
-    _posSub = Geolocator.getPositionStream(locationSettings: settings).listen((pos) {
+    // High-frequency, sub-second location updates
+    final locationSettings = Platform.isAndroid
+        ? AndroidSettings(
+      accuracy: LocationAccuracy.bestForNavigation,
+      distanceFilter: 0,
+      intervalDuration: Duration(milliseconds: 500),
+    )
+        : AppleSettings(
+      accuracy: LocationAccuracy.bestForNavigation,
+      distanceFilter: 0,
+      pauseLocationUpdatesAutomatically: false,
+      activityType: ActivityType.fitness,
+    );
+
+    _posSub = Geolocator.getPositionStream(locationSettings: locationSettings).listen((pos) {
       if (!mounted) return;
-      setState(() => _user = LatLng(pos.latitude, pos.longitude));
+      final next = LatLng(pos.latitude, pos.longitude);
+
+      setState(() => _user = next);
+
+      // Recenter on every GPS tick unless the user is actively panning
+      if (!_isUserPanning) {
+        _mapController.move(next, _zoom);
+      }
+
+      _recenterTimer?.cancel();
     });
 
     _mapSub = _mapController.mapEventStream.listen((evt) {
@@ -72,16 +98,18 @@ class _MapTabState extends State<MapTab> {
       _centerLat = cam.center.latitude;
       _mapRotationDeg = cam.rotation;
 
-      // Handle recentre after pan ended + 1s inactivity
-      if (evt is MapEventMoveStart || evt is MapEventMove) {
+      // Track panning state
+      if (evt is MapEventMoveStart) {
+        _isUserPanning = true;
         _recenterTimer?.cancel();
-      }
-      if (evt is MapEventMoveEnd) {
-        _recenterTimer?.cancel();
-        _recenterTimer = Timer(const Duration(seconds: 1), () {
-          if (!mounted) return;
-          if (_user != null) _mapController.move(_user!, _zoom);
-        });
+      } else if (evt is MapEventMove) {
+        _isUserPanning = true;
+      } else if (evt is MapEventMoveEnd) {
+        _isUserPanning = false;
+        // Optional snap-back when drag ends (kept for UX)
+        if (_user != null) {
+          _mapController.move(_user!, _zoom);
+        }
       }
 
       setState(() {});
