@@ -6,6 +6,7 @@ import 'package:flutter_esp_android_communication/services/global_log.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../models/command.dart';
 import '../models/message.dart';
 import '../services/serial_service.dart';
 
@@ -34,6 +35,30 @@ class AppState extends ChangeNotifier {
   double? headingDegrees;
   Message? lastSent;
   Message? lastReceived;
+
+  Command? _selectedCommand = Command.start;
+  int _selectedTarget = Drone.broadcast;
+
+  Command get selectedCommand {
+    Command.ensureRegistered();
+    return _selectedCommand ?? Command.start;
+  }
+
+  void setSelectedCommand(Command? cmd) {
+    if (_selectedCommand == cmd) return;
+    _selectedCommand = cmd;
+    notifyListeners();
+  }
+
+  void setSelectedTarget(int id) {
+    if (_selectedTarget == id) return;
+    _selectedTarget = id;
+    notifyListeners();
+  }
+
+  int get selectedTarget => _selectedTarget;
+
+
 
   Future<void> init() async {
     serial.statusStream.listen((s) {

@@ -17,6 +17,11 @@ class Drone {
   static Drone bajer3 = Drone._(0x03, "Bajer 3", Colors.lightGreenAccent);
   static Drone bajer4 = Drone._(0x04, "Bajer 4", Colors.amberAccent);
 
+  static void ensureRegistered() {
+    if (registeredDronesMap.isNotEmpty) return;
+    bajer1; bajer2; bajer3; bajer4;
+  }
+
   static bool isValidId(int id) {
     return id == Drone.broadcast || Drone.registeredDronesMap.containsKey(id);
   }

@@ -125,6 +125,26 @@ class Command {
 
   static Command telemetry= Command._(0xFF, "TELEMETRY");
 
+  static void ensureRegistered() {
+    start; crdSnd; flyTo; altSet; msnStart; end; prepTest; prepMsn; flyPolar; setSpeed; telemetry;
+  }
+
+  static Iterable<Command> get all {
+    ensureRegistered();
+    return registeredCommands.values;
+  }
+
+  static Iterable<Command> get visible {
+    ensureRegistered();
+    return registeredCommands.values.where((c) => c.display);
+  }
+
+  // Strongly recommended to avoid Dropdown value identity issues:
+  @override
+  bool operator ==(Object other) => other is Command && other.byte == byte;
+  @override
+  int get hashCode => byte.hashCode;
+
   Command(
       this.byte,
       this.internalName,
