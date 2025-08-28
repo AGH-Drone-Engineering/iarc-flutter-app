@@ -99,7 +99,7 @@ class Command {
   static Command end      = Command(0x06, "END", "End",
     voice: [
       RegExp(r'\b(land|touch\s*down|descend)\b'),
-      RegExp(r'\b(l[aą]duj|wyl[aą]duj|przyziemiaj|przyziemi[eę])\b'),
+      RegExp(r'\b(l[aą]duj|wyl[aą]duj|uziemiaj|uziem)\b'),
     ],
   );
 
@@ -125,7 +125,7 @@ class Command {
     voice: [
       // EN: "forward 30 m at minus 90 degrees"
       RegExp(
-          r'(?:(?:fly|go|move)\s+)?forward\s*'
+          r'(?:(?:fly|go|move)\s+)?(forward)?\s*'
           r'((?:(?:[-\u2212\u2012\u2013\u2014])|(?:minus|negative|ujemn(?:y|a|e))|(?:\+|plus|dodatni(?:a|e)?))?\s*\d+(?:[\.,]\d+)?)'
           r'\s*(?:m|meter|meters)?\s*(?:at\s*)?(?:angle|bearing|heading)?\s*'
           r'((?:(?:[-\u2212\u2012\u2013\u2014])|(?:minus|negative|ujemn(?:y|a|e))|(?:\+|plus|dodatni(?:a|e)?))?\s*\d+(?:[\.,]\d+)?)'
@@ -134,7 +134,7 @@ class Command {
 
       // PL: "do przodu 30 m kąt minus 90 stopni"
       RegExp(
-          r'(?:(?:le[cć]|lec|jed[zź]|idzi[eę]|rusz|przesu[nń])\s+)?(?:do\s+prz[óo]du|naprz[óo]d|prosto)\s*'
+          r'(?:(?:le[cć]|lec|jed[zź]|idzi[eę]|rusz|przesu[nń])\s+)?(?:do\s+prz[óo]du|naprz[óo]d|prosto)?\s*'
           r'((?:(?:[-\u2212\u2012\u2013\u2014])|(?:minus|negative|ujemn(?:y|a|e))|(?:\+|plus|dodatni(?:a|e)?))?\s*\d+(?:[\.,]\d+)?)'
           r'\s*(?:m|metr(?:y|ów|ow)?)?\s*(?:pod\s*k[ąa]tem|k[ąa]t|azymut)\s*'
           r'((?:(?:[-\u2212\u2012\u2013\u2014])|(?:minus|negative|ujemn(?:y|a|e))|(?:\+|plus|dodatni(?:a|e)?))?\s*\d+(?:[\.,]\d+)?)'
