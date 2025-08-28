@@ -1,7 +1,7 @@
 import 'dart:typed_data';
 import 'package:latlong2/latlong.dart';
 
-import 'Drone.dart';
+import 'drone.dart';
 import 'command.dart';
 
 class Message {
