@@ -4,25 +4,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter_esp_android_communication/models/message.dart';
 import 'package:flutter_esp_android_communication/services/global_log.dart';
 import 'package:flutter_esp_android_communication/widgets/drone_status_tile.dart';
-import 'package:latlong2/latlong.dart'; // LatLng, Distance
 import 'package:provider/provider.dart';
 import 'package:usb_serial/usb_serial.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
-import 'package:flutter_compass/flutter_compass.dart';
-import 'package:geolocator/geolocator.dart';
 
+import '../models/Drone.dart';
+import '../models/command.dart';
 import '../state/app_state.dart';
 import '../widgets/voice_button.dart';
-
-enum CommandOption {
-  start,
-  setAltitude, // requires numeric value (meters)
-  flyForward,  // requires numeric value (meters)
-  land,
-  proceed,
-  prepareForMission,
-  prepareForTestFlight
-}
 
 class EspDataTab extends StatefulWidget {
   const EspDataTab({super.key});
@@ -43,13 +32,13 @@ class _EspDataTabState extends State<EspDataTab> with AutomaticKeepAliveClientMi
   String? _parseError;
 
   // Command dropdown + optional parameter
-  CommandOption _cmd = CommandOption.start;
-  int _target = NodeId.broadcast;
+  Command? _cmd = Command.start;
+  final Map<String, TextEditingController> _paramCtrls = {};
+
+  int _target = Drone.broadcast;
 
   @override
   bool get wantKeepAlive => true;
-
-  final TextEditingController _paramCtrl = TextEditingController();
 
   Future<void> _refreshDevices(AppState app) async {
     _devices = await app.serial.listDevices();
@@ -74,117 +63,72 @@ class _EspDataTabState extends State<EspDataTab> with AutomaticKeepAliveClientMi
       final ok = await _speech!.initialize(onStatus: (_) {}, onError: (_) {});
       if (mounted) setState(() => _speechAvailable = ok);
     });
+    _rebuildControllersFor(_cmd);
   }
 
   @override
   void dispose() {
-    _paramCtrl.dispose();
+    for (final c in _paramCtrls.values) {
+      c.dispose();
+    }
     super.dispose();
   }
 
-  bool get _requiresParam =>
-      _cmd == CommandOption.setAltitude || _cmd == CommandOption.flyForward;
+  void _rebuildControllersFor(Command? cmd) {
+    // Dispose old
+    for (final c in _paramCtrls.values) {
+      c.dispose();
+    }
+    _paramCtrls.clear();
 
-  String get _paramLabel =>
-      _cmd == CommandOption.setAltitude ? 'Altitude (m)' : 'Distance (m)';
-
+    if (cmd == null) return;
+    for (final p in cmd.params) {
+      _paramCtrls[p.key] = TextEditingController();
+    }
+  }
+  // Assumes: Command.registeredCommands filled; Map<String, TextEditingController> _paramCtrls exists.
   String? _parseVoiceToCommand(String phrase) {
     final text = phrase.toLowerCase().trim();
 
-    double? pullNumber(RegExp re) {
-      final m = re.firstMatch(text);
-      if (m != null && m.groupCount >= 1) {
-        return double.tryParse(m.group(1)!.replaceAll(',', '.'));
+    double? parseNum(String s) => double.tryParse(s.replaceAll(',', '.'));
+
+    for (final cmd in Command.registeredCommands.values) {
+      if (cmd.voice.isEmpty) continue;
+
+      for (final re in cmd.voice) {
+        final m = re.firstMatch(text);
+        if (m == null) continue;
+        _cmd = cmd;
+        for (final p in cmd.params) {
+          (_paramCtrls[p.key] ??= TextEditingController()).clear();
+        }
+        final nums = <double>[];
+        for (var i = 1; i <= m.groupCount; i++) {
+          final g = m.group(i);
+          if (g != null) {
+            final v = parseNum(g);
+            if (v != null) nums.add(v);
+          }
+        }
+        if (nums.isEmpty) {
+          final g = RegExp(r'(\d+(?:[\.,]\d+)?)').firstMatch(text);
+          if (g != null) {
+            final v = parseNum(g.group(1)!);
+            if (v != null) nums.add(v);
+          }
+        }
+        for (var i = 0; i < cmd.params.length && i < nums.length; i++) {
+          final key = cmd.params[i].key;
+          (_paramCtrls[key] ??= TextEditingController()).text = nums[i].toString();
+        }
+        if (cmd == Command.flyPolar &&
+            (_paramCtrls['dist']?.text.isNotEmpty ?? false) &&
+            (_paramCtrls['angle']?.text.isEmpty ?? true)) {
+          (_paramCtrls['angle'] ??= TextEditingController()).text = '0';
+        }
+
+        return null; // success
       }
-      return null;
-    }
-
-    final altRePl = RegExp(
-      r'(?:ustaw\s+)?(?:wysoko(?:ść|sc)|wysokosc|wysokość\s*lotu|wysokosc\s*lotu|wys\.)\s*(?:na|do)?\s*(\d+(?:[\.,]\d+)?)'
-    );
-    final altReEn = RegExp(
-      r'(?:set\s+)?(?:altitude|alt|height)\s*(?:to)?\s*(\d+(?:[\.,]\d+)?)'
-    );
-    if (altRePl.hasMatch(text) || altReEn.hasMatch(text)) {
-      final v = pullNumber(altRePl) ?? pullNumber(altReEn);
-      if (v == null) return 'Could not parse altitude value from STT';
-      _cmd = CommandOption.setAltitude;
-      _paramCtrl.text = v.toString();
-      return null;
-    }
-
-    final fwdRePl = RegExp(
-      r'(?:(?:le[cć]|lec|jed[zź]|idzi[eę]|rusz|przesu[nń])\s+)?(?:do\s+prz[óo]du|naprz[óo]d|prosto)\s*(\d+(?:[\.,]\d+)?)(?:\s*(?:m|metr(?:y|ów|ow)?))?'
-    );
-    final fwdReEn = RegExp(
-      r'(?:(?:fly|go|move)\s+)?forward\s(for)?(\d+(?:[\.,]\d+)?)(?:\s*(?:m|meter|meters))?'
-    );
-    if (fwdRePl.hasMatch(text) || fwdReEn.hasMatch(text)) {
-      final v = pullNumber(fwdRePl) ?? pullNumber(fwdReEn);
-      if (v == null) return 'Could not parse distance value from STT';
-      _cmd = CommandOption.flyForward;
-      _paramCtrl.text = v.toString();
-      return null;
-    }
-
-    final landEn = RegExp(
-      r'\b(land|touch\s*down|descend)\b'
-    );
-    final landPl = RegExp(
-      r'\b(l[aą]duj|wyl[aą]duj|przyziemiaj|przyziemi[eę])\b'
-    );
-    if (landPl.hasMatch(text) || landEn.hasMatch(text)) {
-      _cmd = CommandOption.land;
-      _paramCtrl.text = "";
-      return null;
-    }
-
-    final missionEn = RegExp(
-      r'\b(proceed|continue|resume)\b'
-    );
-    final missionPl = RegExp(
-      r'\b(misja|kontynuuj|rozpocznij misję)\b'
-    );
-    if (missionPl.hasMatch(text) || missionEn.hasMatch(text)) {
-      _cmd = CommandOption.proceed;
-      _paramCtrl.text = "";
-      return null;
-    }
-
-    final startEn = RegExp(
-      r'\b(start|arm|begin)\b'
-    );
-    final startPl = RegExp(
-      r'\b(startuj|uzbr[óo]j|zacznij|rozpocznij)\b'
-    );
-    if (startPl.hasMatch(text) || startEn.hasMatch(text)) {
-      _cmd = CommandOption.start;
-      _paramCtrl.text = "";
-      return null;
-    }
-
-    final prepTestEn = RegExp(
-      r'\b(?:prepare|prep|ready|arm)\s*(?:for\s*)?(?:test[-\s]*flight|pre[-\s]*flight|preflight)\b'
-    );
-    final prepTestPl = RegExp(
-      r'(?:przygotuj|uzbr[oó]j|got[oó]w(?:uj)?)\s*(?:do\s*)?(?:lotu?\s*testow(?:ego|y)|testowego\s*lotu|lotu?\s*pr[óo]bnego)'
-    );
-    if (prepTestPl.hasMatch(text) || prepTestEn.hasMatch(text)) {
-      _cmd = CommandOption.prepareForTestFlight;
-      _paramCtrl.text = "";
-      return null;
-    }
-
-    final prepMissionEn = RegExp(
-      r'\b(?:prepare|prep|ready)\s*(?:for\s*)?missions?\b'
-    );
-    final prepMissionPl = RegExp(
-      r'(?:przygotuj|got[oó]w(?:uj)?|uzbr[oó]j)\s*(?:do|na)?\s*misj[ieę]'
-    );
-    if (prepMissionPl.hasMatch(text) || prepMissionEn.hasMatch(text)) {
-      _cmd = CommandOption.prepareForMission;
-      _paramCtrl.text = "";
-      return null;
     }
 
     return 'Unrecognized command';
@@ -217,118 +161,117 @@ class _EspDataTabState extends State<EspDataTab> with AutomaticKeepAliveClientMi
     );
   }
 
-  Future<double?> _getHeadingDegrees(AppState app) async {
-    try {
-      final ev = await FlutterCompass.events
-          ?.firstWhere((e) => e.heading != null && e.heading!.isFinite)
-          .timeout(const Duration(milliseconds: 800));
-      if (ev?.heading != null && ev!.heading!.isFinite) {
-        app.headingDegrees = ev.heading;
-        return ev.heading;
-      }
-    } catch (_) {}
-    try {
-      final pos = await Geolocator.getCurrentPosition();
-      if (pos.heading.isFinite && pos.heading >= 0) {
-        app.headingDegrees = pos.heading;
-        return pos.heading;
-      }
-    } catch (_) {}
-    return null;
-  }
-
-  Future<LatLng?> _getCurrentLatLng(AppState app) async {
-    try {
-      final pos = await Geolocator.getCurrentPosition();
-      final here = LatLng(pos.latitude, pos.longitude);
-      app.userLocation = here;
-      return here;
-    } catch (_) {
-      return null;
-    }
-  }
-
-  Future<LatLng?> _latLngFromDistanceToUser(AppState app, double meters) async {
-    LatLng? start = await _getCurrentLatLng(app);
-    double? heading = await _getHeadingDegrees(app);
-
-    if (heading == null) {
-      if (app.headingDegrees != null) {
-        heading = app.headingDegrees;
-        logWarn("Heading unavailable, using last cached");
-      } else {
-        heading = 0.0;
-        logWarn("Heading unavailable, no previous heading found, using geo north");
-      }
-    }
-
-    if (start == null) {
-      if (app.userLocation != null) {
-        start = app.userLocation;
-        logWarn(
-          'Location unavailable; using last known location (${start!.latitude.toStringAsFixed(5)}, ${start.longitude.toStringAsFixed(5)})'
-        );
-      } else if (app.singlePoint != null) {
-        start = app.singlePoint;
-        logWarn(
-          'Location unavailable; using singlePoint (${start!.latitude.toStringAsFixed(5)}, ${start.longitude.toStringAsFixed(5)})'
-        );
-      } else {
-        logError('Location unavailable, no last known location, no single point set. Command not sent');
-        return null;
-      }
-    }
-
-    final dest = Distance().offset(start, meters, heading as num);
-    app.singlePoint = dest;
-    return dest;
-  }
-
   Future<void> _sendSelectedCommand(AppState app) async {
-    String args = "";
-    final argTrim = _paramCtrl.text.trim();
-    if (argTrim.isNotEmpty) {
-      args = ' (argument: $argTrim)';
-    }
-    final v = double.tryParse(argTrim);
-    if (v == null) {
-      if (_cmd == CommandOption.setAltitude) {
-        _showSnack('Enter a valid altitude (meters).');
-        return;
-      }
-      if (_cmd == CommandOption.flyForward) {
-        _showSnack('Enter a valid distance (meters).');
-        return;
-      }
-    }
-    logSnt('Sending ${_cmd.name} to ${nodeIdToName[_target]}$args');
+    final cmd = _cmd;
+    if (cmd == null) return;
 
-    switch (_cmd) {
-      case CommandOption.start:
+    String args = '';
+    if (cmd.params.isNotEmpty) {
+      final parts = <String>[];
+      for (final p in cmd.params) {
+        final t = _paramCtrls[p.key]?.text.trim() ?? '';
+        if (t.isNotEmpty) parts.add('${p.label}: $t');
+      }
+      if (parts.isNotEmpty) args = ' (${parts.join(', ')})';
+    }
+
+    final parsed = <String, double>{};
+    for (final p in cmd.params) {
+      final raw = (_paramCtrls[p.key]?.text ?? '').trim();
+      final val = double.tryParse(raw.replaceAll(',', '.'));
+      if (raw.isEmpty || val == null) {
+        _showSnack('Enter a valid ${p.label}.');
+        return;
+      }
+      parsed[p.key] = val;
+    }
+
+    final sndName = _target == Drone.broadcast
+        ? 'All drones'
+        : Drone.registeredDronesMap[_target]?.name;
+    logSnt('Sending ${cmd.internalName} to $sndName$args');
+
+    switch (cmd) {
+      case Command(byte: 0x01): // START
         await app.serial.send(MessageBuilder.start(dest: _target));
         return;
-      case CommandOption.setAltitude:
-        await app.serial.send(MessageBuilder.altSet(dest: _target, meters: v!, endian: Endian.big));
+
+      case Command(byte: 0x04): // ALT_SET
+        await app.serial.send(
+          MessageBuilder.altSet(
+            dest: _target,
+            meters: parsed['alt']!, // from Command.altSet.params
+            endian: Endian.big,
+          ),
+        );
         return;
-      case CommandOption.flyForward:
-        LatLng? coord = await _latLngFromDistanceToUser(app, v!);
-        if (coord == null) return;
-        await app.serial.send(MessageBuilder.flyTo(dest: _target, lat: coord.latitude, lon: coord.longitude, endian: Endian.big));
+
+      case Command(byte: 0x0B): // SET_SPEED
+        await app.serial.send(
+          MessageBuilder.setSpeed(
+            dest: _target,
+            speed: parsed['speed']!,
+            endian: Endian.big,
+          ),
+        );
         return;
-      case CommandOption.land:
-        await app.serial.send(MessageBuilder.end(dest: _target));
+
+      case Command(byte: 0x03): // FLY_TO (lat/lng)
+        await app.serial.send(
+          MessageBuilder.flyTo(
+            dest: _target,
+            lat: parsed['lat']!,
+            lon: parsed['lng']!,
+            endian: Endian.big,
+          ),
+        );
         return;
-      case CommandOption.proceed:
+
+      case Command(byte: 0x09): // FLY_POLAR (dist, angle → lat/lon)
+        await app.serial.send(
+          MessageBuilder.flyPolar(
+            dest: _target,
+            dist: parsed['dist']!,
+            angle: parsed['angle']!,
+            endian: Endian.big,
+          ),
+        );
+        return;
+
+      case Command(byte: 0x05): // MSN_START (Proceed)
         await app.serial.send(MessageBuilder.msnStart(dest: _target));
         return;
-      case CommandOption.prepareForTestFlight:
+
+      case Command(byte: 0x06): // END (Land)
+        await app.serial.send(MessageBuilder.end(dest: _target));
+        return;
+
+      case Command(byte: 0x07): // PREP_TEST
         await app.serial.send(MessageBuilder.prepareForTest(dest: _target));
         return;
-      case CommandOption.prepareForMission:
+
+      case Command(byte: 0x08): // PREP_MSN
         await app.serial.send(MessageBuilder.prepareForMission(dest: _target));
+        return;
+
+      case Command(byte: 0x02): // CRD_SND
+        final pts = app.orderedCorners;
+        if (pts.length != 4) {
+          logError("User tried to send incomplete point list: $pts");
+          _showSnack("Not all points are provided!");
+          return;
+        }
+        await app.serial.send(MessageBuilder.crdSnd(dest: Drone.broadcast, corners: pts));
+        return;
+
+      default:
+        logWarn(
+          'Unhandled command: ${cmd.internalName} (0x${cmd.byte.toRadixString(16)})',
+        );
         return;
     }
   }
+
 
   void _clearHeard() {
     setState(() {
@@ -344,6 +287,13 @@ class _EspDataTabState extends State<EspDataTab> with AutomaticKeepAliveClientMi
 
   @override
   Widget build(BuildContext context) {
+    final drones = Drone.registeredDronesMap.values.toList()
+        ..sort((a, b) => a.id.compareTo(b.id));
+    final commands = Command.registeredCommands.values
+        .where((c) => c.display)
+        .toList()
+      ..sort((a, b) => a.byte.compareTo(b.byte)); // stable order
+
     super.build(context);
     final app = context.watch<AppState>();
     return Padding(
@@ -428,27 +378,14 @@ class _EspDataTabState extends State<EspDataTab> with AutomaticKeepAliveClientMi
                 child: DropdownButtonFormField<int>(
                   initialValue: _target,
                   items: [
-                    DropdownMenuItem(
-                      value: NodeId.broadcast,
-                      child: Text(nodeIdToName[NodeId.broadcast]!),
-                    ),
-                    DropdownMenuItem(
-                      value: NodeId.drone1,
-                      child: Text(nodeIdToName[NodeId.drone1]!),
-                    ),
-                    DropdownMenuItem(
-                      value: NodeId.drone2,
-                      child: Text(nodeIdToName[NodeId.drone2]!),
-                    ),
-                    DropdownMenuItem(
-                      value: NodeId.drone3,
-                      child: Text(nodeIdToName[NodeId.drone3]!),
-                    ),
-                    DropdownMenuItem(
-                      value: NodeId.drone4,
-                      child: Text(nodeIdToName[NodeId.drone4]!),
-                    ),
-                  ],
+                    Drone.broadcast,
+                    ...Drone.registeredDronesMap.keys
+                  ].map((id) => DropdownMenuItem(
+                    value: id,
+                    child: Text(id == Drone.broadcast
+                        ? "All drones"
+                        : Drone.registeredDronesMap[id]!.name)
+                  )).toList(),
                   onChanged: (c) {
                     if (c == null) return;
                     setState(() {
@@ -468,43 +405,19 @@ class _EspDataTabState extends State<EspDataTab> with AutomaticKeepAliveClientMi
           Row(
             children: [
               Expanded(
-                child: DropdownButtonFormField<CommandOption>(
+                child: DropdownButtonFormField<Command>(
                   initialValue: _cmd,
-                  items: const [
-                    DropdownMenuItem(
-                      value: CommandOption.start,
-                      child: Text('Start'),
-                    ),
-                    DropdownMenuItem(
-                      value: CommandOption.setAltitude,
-                      child: Text('Set alt. to'),
-                    ),
-                    DropdownMenuItem(
-                      value: CommandOption.flyForward,
-                      child: Text('Fly forward'),
-                    ),
-                    DropdownMenuItem(
-                      value: CommandOption.land,
-                      child: Text('Land'),
-                    ),
-                    DropdownMenuItem(
-                      value: CommandOption.proceed,
-                      child: Text('Proceed'),
-                    ),
-                    DropdownMenuItem(
-                      value: CommandOption.prepareForMission,
-                      child: Text('Prep mission'),
-                    ),
-                    DropdownMenuItem(
-                      value: CommandOption.prepareForTestFlight,
-                      child: Text('Prep test'),
-                    ),
+                  items: [
+                    for (final c in commands)
+                      DropdownMenuItem(
+                        value: c,
+                        child: Text(c.displayName),
+                      ),
                   ],
                   onChanged: (c) {
-                    if (c == null) return;
                     setState(() {
                       _cmd = c;
-                      if (!_requiresParam) _paramCtrl.clear();
+                      _rebuildControllersFor(c);
                     });
                   },
                   decoration: const InputDecoration(
@@ -514,56 +427,64 @@ class _EspDataTabState extends State<EspDataTab> with AutomaticKeepAliveClientMi
                 ),
               ),
               const SizedBox(width: 8),
-              if (_requiresParam)
-                SizedBox(
-                  width: 160,
-                  child: TextField(
-                    controller: _paramCtrl,
-                    decoration: InputDecoration(
-                      labelText: _paramLabel,
-                      border: const OutlineInputBorder(),
-                    ),
-                    keyboardType: const TextInputType.numberWithOptions(
-                      signed: false,
-                      decimal: true,
-                    ),
+              // Dynamic parameter inputs (0..n)
+              if ((_cmd?.params.isNotEmpty ?? false))
+                Flexible(
+                  child: Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      for (final p in _cmd!.params)
+                        SizedBox(
+                          width: 160,
+                          child: TextField(
+                            controller: _paramCtrls[p.key],
+                            decoration: InputDecoration(
+                              labelText: p.label,
+                              border: const OutlineInputBorder(),
+                            ),
+                            keyboardType: const TextInputType.numberWithOptions(
+                              signed: true,  // we'll restrict with inputFormatters below
+                              decimal: true,
+                            ),
+                            inputFormatters: [
+                              // Optional: lightly constrain numeric inputs
+                              // You can add a more robust formatter per p.signed/p.decimal
+                            ],
+                          ),
+                        ),
+                    ],
                   ),
                 ),
             ],
           ),
           const SizedBox(height: 12),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              FilledButton.icon(
-                onPressed: () => _sendSelectedCommand(app),
-                icon: const Icon(Icons.send),
-                label: const Text('Send Command'),
-              ),
-              const SizedBox(width: 12),
-              OutlinedButton.icon(
-                onPressed: () => app.sendCornersToEsp(),
-                icon: const Icon(Icons.share_location),
-                label: const Text('Send Coords'),
-              ),
-            ],
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton.icon(
+              onPressed: () => _sendSelectedCommand(app),
+              icon: const Icon(Icons.send),
+              label: const Text('Send Command'),
+            )
           ),
-          Row (
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Expanded(child: DroneStatusTile(lastMessageAt: app.lastSeen[NodeId.drone1], droneId: nodeIdToName[NodeId.drone1]!, points: app.espPoints[NodeId.drone1]!.length)),
-              const SizedBox(width: 12),
-              Expanded(child: DroneStatusTile(lastMessageAt: app.lastSeen[NodeId.drone2], droneId: nodeIdToName[NodeId.drone2]!, points: app.espPoints[NodeId.drone2]!.length))
-            ]
-          ),
-          const SizedBox(height: 12),
-          Row (
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Expanded(child: DroneStatusTile(lastMessageAt: app.lastSeen[NodeId.drone3], droneId: nodeIdToName[NodeId.drone3]!, points: app.espPoints[NodeId.drone3]!.length)),
-              const SizedBox(width: 12),
-              Expanded(child: DroneStatusTile(lastMessageAt: app.lastSeen[NodeId.drone4], droneId: nodeIdToName[NodeId.drone4]!, points: app.espPoints[NodeId.drone4]!.length))
-            ]
+          GridView.builder(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 2,
+              crossAxisSpacing: 12,
+              mainAxisSpacing: 12,
+              childAspectRatio: 2.6, // tweak to match your tile shape
+            ),
+            itemCount: drones.length,
+            itemBuilder: (context, index) {
+              final d = drones[index];
+              return DroneStatusTile(
+                lastMessageAt: d.lastSeen,
+                droneId: d.name,
+                points: d.points.length,
+              );
+            },
           )
         ],
       ),

@@ -1,6 +1,8 @@
 // lib/screens/map_tab.dart
 import 'dart:async';
+import 'dart:io' show Platform;
 import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_compass/flutter_compass.dart';
 import 'package:flutter_map/flutter_map.dart';
@@ -9,7 +11,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:provider/provider.dart';
 
-import '../models/message.dart';
+import '../models/drone.dart';
 import '../state/app_state.dart';
 import '../widgets/ground_dots_layer.dart';
 
@@ -26,7 +28,7 @@ class _MapTabState extends State<MapTab> {
   StreamSubscription<CompassEvent>? _compassSub;
   StreamSubscription<Position>? _posSub;
   StreamSubscription<MapEvent>? _mapSub;
-  Timer? _recenterTimer; // NEW
+  Timer? _recenterTimer;
 
   double? _headingDeg;
   double _mapRotationDeg = 0;
@@ -34,10 +36,7 @@ class _MapTabState extends State<MapTab> {
   double _zoom = 2;
   double _centerLat = 0;
 
-  bool? _lastRotatePref; // NEW: to detect toggle changes
   bool? _lastRotatePref;
-
-  // NEW: follow-user gating while panning
   bool _isUserPanning = false;
 
   @override
@@ -172,7 +171,7 @@ class _MapTabState extends State<MapTab> {
     final polygon = app.hasFourCorners
         ? [
       Polygon(
-        points: app.orderedCorners, // keep your ordered corners if present
+        points: app.orderedCorners,
         borderColor: Colors.indigo,
         borderStrokeWidth: 3,
         color: Colors.indigo.withValues(alpha: 0.15),
@@ -187,6 +186,9 @@ class _MapTabState extends State<MapTab> {
     final oneMeterPx = 1.0 / mpp;
     double userMarkerPx = (oneMeterPx * 0.7).clamp(6.0, 18.0).toDouble();
     final userMarkerRadius = userMarkerPx / 2.0;
+
+    final drones = Drone.registeredDronesMap.values.toList()
+      ..sort((a, b) => a.id.compareTo(b.id));
 
     return Stack(
       children: [
@@ -208,38 +210,22 @@ class _MapTabState extends State<MapTab> {
             if (polygon.isNotEmpty) PolygonLayer(polygons: polygon),
 
             // 1m ground dots
-            GroundDotsLayer(
-              points: app.espPoints[NodeId.drone1] ?? [],
-              diameterMeters: 1.0,
-              color: Colors.red.shade300,
-              minPixelDiameter: 3.0,
-            ),
-            GroundDotsLayer(
-              points: app.espPoints[NodeId.drone2] ?? [],
-              diameterMeters: 1.0,
-              color: Colors.greenAccent,
-              minPixelDiameter: 3.0,
-            ),
-            GroundDotsLayer(
-              points: app.espPoints[NodeId.drone3] ?? [],
-              diameterMeters: 1.0,
-              color: Colors.lightGreenAccent,
-              minPixelDiameter: 3.0,
-            ),
-            GroundDotsLayer(
-              points: app.espPoints[NodeId.drone4] ?? [],
-              diameterMeters: 1.0,
-              color: Colors.orange,
-              minPixelDiameter: 3.0,
-            ),
-            GroundDotsLayer(
-              points: app.singlePoint != null ? [app.singlePoint!] : const [],
-              diameterMeters: 1.0,
-              color: Colors.purpleAccent,
-              minPixelDiameter: 3.0,
-              innerColor: Colors.purpleAccent,
-            ),
+            for (var i = 0; i < drones.length; i++)
+              GroundDotsLayer(
+                points: drones[i].points,
+                diameterMeters: 1.0,
+                color: drones[i].mineDisplayColor,
+                minPixelDiameter: 3.0,
+              ),
 
+            if (app.singlePoint != null)
+              GroundDotsLayer(
+                points: [app.singlePoint!],
+                diameterMeters: 1.0,
+                color: Colors.purpleAccent,
+                minPixelDiameter: 3.0,
+                innerColor: Colors.purpleAccent,
+              ),
             if (_user != null)
               CircleLayer(
                 circles: [
