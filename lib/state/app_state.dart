@@ -1,14 +1,14 @@
 // lib/state/app_state.dart
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
-import 'package:flutter_esp_android_communication/models/Drone.dart';
-import 'package:flutter_esp_android_communication/services/global_log.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/command.dart';
 import '../models/message.dart';
+import '../services/global_log.dart';
 import '../services/serial_service.dart';
+import '../models/drone.dart';
 
 class AppState extends ChangeNotifier {
   final SerialService serial = SerialService();
