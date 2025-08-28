@@ -122,7 +122,7 @@ class _MapTabState extends State<MapTab> {
     final desired = (headingDeg % 360 + 360) % 360;
     final diff = (desired - _mapRotationDeg).abs();
     if (diff >= 1.0) {
-      _mapController.rotate(desired);
+      _mapController.rotate(-desired);
     }
   }
 
