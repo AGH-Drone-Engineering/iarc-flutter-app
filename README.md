@@ -1,5 +1,6 @@
 # Komendy głosowe 
 Na początku komendy może wystąpić desygnacja. Można zmieniać komendę bez powtarzania jej
+
 Jeśli komenda nie jest valid, nowa desygnacja nie zapisze się.
 
 ## Misja
@@ -71,7 +72,7 @@ Możliwe teksty aktywacyjne (przykładowe):
 - wys. do 1
 - wys. 1
 
-### FLT_POLAR
+### FLY_POLAR
 Możliwe teksty aktywacyjne (przykładowe):
 - forward 30 m at minus 90 degrees
 - move forward 30 meters bearing negative 24.5 degrees
