@@ -7,7 +7,28 @@ companion computers. Messages travel inside the `PAYLOAD` of a LoRaCom `SENDMSG`
 `GETMSG` frame (`RPi_CM_Drone_Board/firmware_CMDB/loracom/protocol.adoc`), which the
 firmware forwards verbatim.
 
-## 1. Encoding
+## 1. Transports
+
+The message set is identical on both; only framing and addressing differ.
+
+| | LoRaCom | UDP |
+|---|---|---|
+| Path | phone → USB → ESP → LoRa → HAT → UART → Pi | phone → Wi-Fi → Pi |
+| Framing | `TYPE\|ID\|LEN\|PAYLOAD\|CRC16` (`loracom/protocol.adoc`) | one message per datagram |
+| Drone id | frame `ID` byte | source/destination address |
+| Delivery | host-polled via `GETMSG` (§6) | pushed |
+| Max payload | 248 bytes | datagram limit, keep under 1400 |
+
+**UDP.** Each drone listens on an agreed port (default `14660`) and replies to the
+source address and port of the datagram it received, so the ground station needs no
+fixed address. The ground station identifies a drone by source address, so one
+address per drone. `0xFF` broadcast is realised by sending to every configured
+endpoint in turn.
+
+The 248-byte cap and the `0x00`/`0x0A`/`0x0D` ban in §2 apply on both transports, so a
+message built for one is always valid on the other.
+
+## 2. Encoding
 
 | Rule | Value |
 |---|---|
@@ -21,7 +42,7 @@ firmware forwards verbatim.
 | Unknown fields | MUST be ignored |
 | Unknown `t` | MUST be answered with `NACK` / `UNSUPPORTED` |
 
-## 2. Envelope
+## 3. Envelope
 
 Every message is a flat JSON object with three mandatory fields; type-specific fields
 sit alongside them at the top level.
@@ -32,17 +53,17 @@ sit alongside them at the top level.
 | `q` | int | Sequence number, `0..65535`, wrapping. Unique per sender per power cycle. |
 | `t` | string | Message type, uppercase. |
 
-## 3. Addressing
+## 4. Addressing
 
-Node addresses live in the Layer 1 frame's `ID` byte. Layer 2 never carries a drone ID.
+Layer 2 never carries a drone ID; it comes from the transport (§1).
 
 | | Value |
 |---|---|
-| Drone addresses | `1..31` (HAT jumper range) |
+| Drone addresses | `1..31` (HAT jumper range; also the UDP endpoint key) |
 | Broadcast | `0xFF` |
 | Reserved | `0x00` |
 
-## 4. Ground → drone
+## 5. Ground → drone
 
 ### `START_DEMO`
 
@@ -63,7 +84,7 @@ Arm, take off to `alt`, hold position, await `MOVE` / `LAND`.
 ```
 
 Advance the demo routine by one step. Valid only in demo mode, otherwise
-`NACK`/`BAD_STATE`. See §7.
+`NACK`/`BAD_STATE`. See §8.
 
 ### `START_MAIN`
 
@@ -136,7 +157,7 @@ it even when it cannot reply.
 
 Reply with `ACK`, then a `TELEM`.
 
-## 5. Drone → ground
+## 6. Drone → ground
 
 ### `ACK`
 
@@ -230,7 +251,7 @@ Sent once per newly detected mine; the drone SHOULD de-duplicate by tag.
 | `LANDED` | On the ground, disarmed |
 | `ABORT` | Mission aborted |
 
-## 6. Reliability
+## 7. Reliability
 
 ### Command ACK
 
@@ -242,7 +263,7 @@ Sent once per newly detected mine; the drone SHOULD de-duplicate by tag.
 
 Broadcast commands are tracked per drone: each drone ACKs individually.
 
-### Polling
+### Polling (LoRaCom only)
 
 LoRaCom is host-initiated; the board never pushes. The ground station:
 
@@ -259,7 +280,7 @@ LoRaCom is host-initiated; the board never pushes. The ground station:
 - A repeated `q` from the same sender within 5 s MUST be treated as a retransmission:
   re-send the ACK, do not repeat the action.
 
-## 7. Demo sequencing
+## 8. Demo sequencing
 
 The demo routine is driven by the ground station, one step per round trip. The
 drone holds the choreography; the ground station only advances it and handles
@@ -275,7 +296,7 @@ START_DEMO ──ACK──► NEXT_STEP ──ACK──► NEXT_STEP ──ACK�
 
 1. After `START_DEMO` is acknowledged, the ground station sends `NEXT_STEP`.
 2. Each `ACK` of a `NEXT_STEP` triggers the next `NEXT_STEP`.
-3. If a command is never acknowledged (§6, 3 attempts exhausted) **or** is
+3. If a command is never acknowledged (§7, 3 attempts exhausted) **or** is
    answered with `NACK`, the ground station sends `RTH` to that drone and stops
    advancing its sequence.
 4. `EVT`/`MISSION_DONE` or `EVT`/`LANDED` ends the sequence normally.
@@ -285,7 +306,7 @@ Each drone runs its own sequence and is advanced independently.
 The ground station bounds the sequence at 200 steps as a runaway guard; a drone
 that has not reported `MISSION_DONE` by then is sent `RTH`.
 
-## 8. Example exchange
+## 9. Example exchange (LoRaCom)
 
 ```
 Phone → ESP   SENDMSG id=3  {"v":1,"q":1,"t":"START_DEMO","alt":3.0}

@@ -122,11 +122,10 @@ class _ConnectionBar extends StatelessWidget {
               ),
             ),
           ),
-          if (app.link.groundNodeId != null)
-            Text(
-              'ESP #${app.link.groundNodeId}',
-              style: Theme.of(context).textTheme.labelSmall,
-            ),
+          Text(
+            app.config.transport.label,
+            style: Theme.of(context).textTheme.labelSmall,
+          ),
         ],
       ),
     );

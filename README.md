@@ -8,8 +8,25 @@ Telefon ──USB──► ESP naziemny ──LoRa──► HAT drona ──UART
 
 Protokół: **[PROTOCOL.md](PROTOCOL.md)**.
 
+## Transport
+
+Dwie drogi do dronów, przełączane **w działającej aplikacji** (zakładka Link),
+bez rebuildu. Protokół misji jest identyczny — różni się tylko łącze.
+
+| | LoRa (USB) | UDP (Wi-Fi) |
+|---|---|---|
+| Droga | telefon → ESP → LoRa → HAT → Pi | telefon → Wi-Fi → Pi |
+| Ramkowanie | LoRaCom + CRC16 | jeden komunikat = jeden datagram |
+| Odbiór | polling `GETMSG` co 200 ms | push |
+
 > HAT mostkuje LoRaCom na GPIO17/18, nie na USB-CDC. Do czasu zmiany firmware'u
 > telefon podłączamy przez przejściówkę USB-UART do tych pinów.
+
+**UDP** to zapas na wypadek niegotowej płytki ESP. W zakładce Link ustawia się port
+nasłuchu i `host:port` per dron — hostname (np. `raspi-usa-1.local`) albo IP,
+rozwiązywane przy połączeniu. Konfiguracja jest zapamiętywana. Dron rozpoznawany
+po adresie źródłowym, więc każdy musi mieć własny; datagram z nieznanego hosta
+trafia do logów jako ostrzeżenie.
 
 ## Zakładki
 
@@ -69,7 +86,7 @@ Trwałe, dzielone per uruchomienie aplikacji (JSONL, 20 ostatnich sesji).
 
 - Wybór sesji z listy, starsze wczytywane z dysku na żądanie
 - Poziomy: `TRACE`, `INFO`, `SENT`, `RECV`, `WARN`, `ERROR` — filtr wielokrotny
-- Filtr tekstowy po treści i tagu (`link`, `ack`, `demo`, `app`)
+- Filtr tekstowy po treści i tagu (`link`, `udp`, `ack`, `demo`, `app`)
 - `Copy` kopiuje aktualnie przefiltrowane wpisy wybranej sesji
 - Wpisy dłuższe niż 3 linie zwinięte, z `expand` / `collapse`
 - `TRACE` domyślnie zbierany, ale ukryty; przełącznik `Capture trace` wyłącza
@@ -92,7 +109,7 @@ Na początku może wystąpić desygnacja drona (`dron 2`, `wszystkie`, `Bajer 3`
 # Development
 
 ```bash
-flutter test        # 61 testów
+flutter test        # 74 testy
 flutter analyze
 flutter build apk --release --split-per-abi
 ```

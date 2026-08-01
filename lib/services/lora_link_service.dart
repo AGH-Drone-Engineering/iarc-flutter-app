@@ -7,19 +7,12 @@ import 'package:usb_serial/usb_serial.dart';
 import '../models/mission_message.dart';
 import 'global_log.dart';
 import 'lora_frame.dart';
+import 'mission_transport.dart';
 
 const _tag = 'link';
 
-class IncomingMission {
-  final int from;
-  final MissionMessage message;
-  const IncomingMission(this.from, this.message);
-}
-
-enum LinkState { disconnected, connecting, connected }
-
-class LinkService {
-  LinkService({
+class LoraLinkService implements MissionTransport {
+  LoraLinkService({
     this.pollInterval = const Duration(milliseconds: 200),
     this.transactionTimeout = const Duration(milliseconds: 250),
     this.maxAttempts = 4,
@@ -28,6 +21,9 @@ class LinkService {
   final Duration pollInterval;
   final Duration transactionTimeout;
   final int maxAttempts;
+
+  @override
+  TransportKind get kind => TransportKind.lora;
 
   UsbPort? _port;
   UsbDevice? _device;
@@ -44,12 +40,17 @@ class LinkService {
   final _statusCtl = StreamController<String>.broadcast();
   final _missionCtl = StreamController<IncomingMission>.broadcast();
 
+  @override
   Stream<LinkState> get stateStream => _stateCtl.stream;
+  @override
   Stream<String> get statusStream => _statusCtl.stream;
+  @override
   Stream<IncomingMission> get missionStream => _missionCtl.stream;
 
   LinkState _state = LinkState.disconnected;
+  @override
   LinkState get state => _state;
+  @override
   bool get isConnected => _state == LinkState.connected;
 
   int? groundNodeId;
@@ -124,6 +125,7 @@ class LinkService {
     }
   }
 
+  @override
   Future<void> disconnect() async {
     _closing = true;
     _pollTimer?.cancel();
@@ -152,6 +154,7 @@ class LinkService {
     _setState(LinkState.disconnected, 'Disconnected');
   }
 
+  @override
   Future<bool> sendMission(int dest, MissionMessage message) async {
     if (!isConnected) {
       logWarn('Send failed: not connected', _tag);
@@ -165,7 +168,7 @@ class LinkService {
       return false;
     }
 
-    logSnt('→ ${_describeDest(dest)}  ${message.encode()}', _tag);
+    logSnt('→ ${describeDest(dest)}  ${message.encode()}', _tag);
     try {
       final reply = await _enqueue(frame);
       final ok = reply != null && reply.type == LoraFrameType.ack;
@@ -232,7 +235,7 @@ class LinkService {
     final text = utf8.decode(payload, allowMalformed: true);
     try {
       final message = MissionMessage.decode(text);
-      logRx('← ${_describeDest(from)}  $text', _tag);
+      logRx('← ${describeDest(from)}  $text', _tag);
       logTrace(_tag, 'decoded ${message.type} q=${message.seq} from=$from');
       if (!_missionCtl.isClosed) _missionCtl.add(IncomingMission(from, message));
     } on UnsupportedMessageTypeException catch (e) {
@@ -330,9 +333,11 @@ class LinkService {
     return b.length > 64 ? '$text … (${b.length} bytes)' : text;
   }
 
-  String _describeDest(int id) =>
+  @override
+  String describeDest(int id) =>
       id == kBroadcastAddress ? 'all drones' : 'node $id';
 
+  @override
   Future<void> dispose() async {
     await disconnect();
     await _stateCtl.close();

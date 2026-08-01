@@ -6,20 +6,25 @@ import 'package:latlong2/latlong.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/drone.dart';
+import '../models/link_config.dart';
 import '../models/mission_message.dart';
 import '../services/command_tracker.dart';
 import '../services/demo_runner.dart';
 import '../services/global_log.dart';
-import '../services/link_service.dart';
+import '../services/lora_link_service.dart';
+import '../services/udp_link_service.dart';
+import '../services/mission_transport.dart';
 
 const _tag = 'app';
 
 class AppState extends ChangeNotifier {
   AppState() {
     Drone.ensureRegistered();
-    link = LinkService();
+    lora = LoraLinkService();
+    udp = UdpLinkService();
+    config = LinkConfig.defaults(Drone.allIds);
     tracker = CommandTracker(
-      sender: link.sendMission,
+      sender: (dest, msg) => transport.sendMission(dest, msg),
       knownDrones: Drone.allIds,
     );
     demo = DemoRunner(tracker: tracker);
@@ -27,10 +32,17 @@ class AppState extends ChangeNotifier {
     demo.addListener(notifyListeners);
   }
 
-  late final LinkService link;
+  late final LoraLinkService lora;
+  late final UdpLinkService udp;
   late final CommandTracker tracker;
   late final DemoRunner demo;
 
+  late LinkConfig config;
+
+  MissionTransport get transport =>
+      config.transport == TransportKind.udp ? udp : lora;
+
+  static const _kLinkKey = 'link_config_v1';
   static const _kCornersKey = 'corners_v1';
   static const _kRotateWithCompassKey = 'rotate_with_compass_v1';
   static const _kDemoAltKey = 'demo_alt_v1';
@@ -58,15 +70,25 @@ class AppState extends ChangeNotifier {
 
   final _subs = <StreamSubscription<Object?>>[];
 
-  bool get isConnected => link.isConnected;
+  bool get isConnected => transport.isConnected;
   List<Drone> get drones => Drone.all;
 
   Future<void> init() async {
-    _subs.add(link.statusStream.listen((s) {
+    await _loadLinkConfig();
+    for (final t in [lora, udp]) {
+      _listenTo(t);
+    }
+    await Future.wait([_loadCorners(), _loadSettings()]);
+  }
+
+  void _listenTo(MissionTransport t) {
+    _subs.add(t.statusStream.listen((s) {
+      if (t.kind != config.transport) return;
       connectionStatus = s;
       notifyListeners();
     }));
-    _subs.add(link.stateStream.listen((s) {
+    _subs.add(t.stateStream.listen((s) {
+      if (t.kind != config.transport) return;
       if (s == LinkState.disconnected) {
         logTrace(_tag, 'link down: clearing tracker and drone telemetry');
         demo.stop();
@@ -77,10 +99,48 @@ class AppState extends ChangeNotifier {
       }
       notifyListeners();
     }));
-    _subs.add(link.missionStream.listen(_onMission));
-
-    await Future.wait([_loadCorners(), _loadSettings()]);
+    _subs.add(t.missionStream.listen((m) {
+      if (t.kind != config.transport) return;
+      _onMission(m);
+    }));
   }
+
+  Future<void> _loadLinkConfig() async {
+    final p = await _ensurePrefs();
+    final raw = p.getString(_kLinkKey);
+    if (raw != null) config = LinkConfig.decode(raw, Drone.allIds);
+    notifyListeners();
+  }
+
+  Future<void> _saveLinkConfig() async {
+    (await _ensurePrefs()).setString(_kLinkKey, config.encode());
+  }
+
+  Future<void> setTransport(TransportKind kind) async {
+    if (config.transport == kind) return;
+    await transport.disconnect();
+    config = config.copyWith(transport: kind);
+    connectionStatus = 'Switched to ${kind.label}';
+    logInfo('Transport switched to ${kind.label}', _tag);
+    notifyListeners();
+    await _saveLinkConfig();
+  }
+
+  Future<void> setUdpListenPort(int port) async {
+    config = config.copyWith(listenPort: port);
+    notifyListeners();
+    await _saveLinkConfig();
+  }
+
+  Future<void> setUdpEndpoint(int droneId, {String? host, int? port}) async {
+    config = config.withEndpoint(droneId, host: host, port: port);
+    notifyListeners();
+    await _saveLinkConfig();
+  }
+
+  Future<bool> connectUdp() => udp.connect(config);
+
+  Future<void> disconnectActive() => transport.disconnect();
 
   void _onMission(IncomingMission incoming) {
     final drone = Drone.byId(incoming.from);
@@ -122,8 +182,6 @@ class AppState extends ChangeNotifier {
         '${m.position.longitude.toStringAsFixed(7)}', _tag);
   }
 
-  /// Kicks off the self-driving demo sequence: ACK advances, anything else
-  /// sends that drone home. See PROTOCOL.md §7.
   Future<void> startDemo({int? target}) {
     final dest = target ?? _selectedTarget;
     final targets = dest == kBroadcastAddress ? Drone.allIds : <int>[dest];
@@ -364,7 +422,8 @@ class AppState extends ChangeNotifier {
     demo.dispose();
     tracker.removeListener(notifyListeners);
     tracker.dispose();
-    link.dispose();
+    lora.dispose();
+    udp.dispose();
     super.dispose();
   }
 }
