@@ -236,21 +236,18 @@ class LoraLinkService implements MissionTransport {
     try {
       final message = MissionMessage.decode(text);
       logRx('← ${describeDest(from)}  $text', _tag);
-      logTrace(_tag, 'decoded ${message.type} q=${message.seq} from=$from');
       if (!_missionCtl.isClosed) _missionCtl.add(IncomingMission(from, message));
     } on UnsupportedMessageTypeException catch (e) {
       logWarn('Unsupported message from node $from: ${e.messageType}', _tag);
     } on MissionMessageException catch (e) {
       logError('Bad payload from node $from: ${e.message}', _tag);
-      logTrace(_tag, 'raw payload: ${sanitizeForLog(text)}');
+      logTrace(_tag, 'raw payload: ${sanitizeForLog(text, maxLength: 0)}');
     }
   }
 
   Future<LoraFrame?> _enqueue(LoraFrame request) {
     final tx = _Transaction(request, ++_txCounter);
     _queue.add(tx);
-    logTrace(_tag, 'tx#${tx.id} queued ${request.type.name} '
-        '(depth=${_queue.length}, busy=${_current != null})');
     _pump();
     return tx.completer.future;
   }
@@ -266,8 +263,10 @@ class LoraLinkService implements MissionTransport {
     if (tx == null) return;
 
     tx.attempts++;
-    logTrace(_tag, 'tx#${tx.id} ${tx.request.type.name} attempt '
-        '${tx.attempts}/$maxAttempts');
+    if (tx.attempts > 1) {
+      logTrace(_tag, 'tx#${tx.id} ${tx.request.type.name} attempt '
+          '${tx.attempts}/$maxAttempts');
+    }
     _writeRaw(tx.request);
     tx.timer = Timer(transactionTimeout, () {
       if (!identical(_current, tx)) return;
@@ -286,7 +285,6 @@ class LoraLinkService implements MissionTransport {
     final tx = _current;
     if (tx == null) return;
     _current = null;
-    logTrace(_tag, 'tx#${tx.id} done reply=${reply?.type.name ?? "none"}');
     tx.complete(reply);
     _pump();
   }
@@ -295,7 +293,6 @@ class LoraLinkService implements MissionTransport {
     final port = _port;
     if (port == null) return;
     final bytes = frame.encode();
-    logTrace(_tag, 'TX ${_hex(bytes)}');
     unawaited(
       port.write(bytes).catchError((Object e) {
         logError('Write failed: $e', _tag);
@@ -304,23 +301,19 @@ class LoraLinkService implements MissionTransport {
   }
 
   void _onBytes(Uint8List data) {
-    logTrace(_tag, 'RX ${_hex(data)}');
     final result = _parser.feed(data);
 
     if (result.noise.isNotEmpty) {
-      // Unframed bytes are whatever happened to be on the wire. Only surface
-      // them as a firmware log line if they actually read as text.
-      if (printableRatio(result.noise) >= 0.9) {
-        final text = utf8.decode(result.noise, allowMalformed: true).trim();
-        if (text.isNotEmpty) logInfo('ESP: ${sanitizeForLog(text)}', _tag);
+      final text = utf8.decode(result.noise, allowMalformed: true).trim();
+      if (printableRatio(result.noise) >= 0.9 && text.isNotEmpty) {
+        logInfo('ESP: ${sanitizeForLog(text, maxLength: 0)}', _tag);
       } else {
-        logTrace(_tag, 'discarded ${result.noise.length} unframed byte(s): '
-            '${_hex(result.noise)}');
+        logTrace(_tag, 'unframed ${result.noise.length}B: ${_hex(result.noise)}');
       }
     }
 
     for (final frame in result.frames) {
-      logTrace(_tag, 'parsed $frame');
+      if (!_isIdlePollReply(frame)) logTrace(_tag, 'RX $frame');
       final tx = _current;
       if (tx != null && tx.accepts(frame)) {
         tx.timer?.cancel();
@@ -331,13 +324,15 @@ class LoraLinkService implements MissionTransport {
     }
   }
 
-  static String _hex(Uint8List b) {
-    final head = b.length > 64 ? b.sublist(0, 64) : b;
-    final text = head
-        .map((v) => v.toRadixString(16).padLeft(2, '0').toUpperCase())
-        .join(' ');
-    return b.length > 64 ? '$text … (${b.length} bytes)' : text;
-  }
+  /// A GETMSG answered by a bare ACK on the first try means "radio queue empty".
+  /// That is the steady state while idle, so it is not worth a log line.
+  bool _isIdlePollReply(LoraFrame frame) =>
+      frame.type == LoraFrameType.ack &&
+      _current?.request.type == LoraFrameType.getmsg &&
+      (_current?.attempts ?? 0) <= 1;
+
+  static String _hex(Uint8List b) =>
+      b.map((v) => v.toRadixString(16).padLeft(2, '0').toUpperCase()).join(' ');
 
   @override
   String describeDest(int id) =>

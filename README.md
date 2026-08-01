@@ -93,9 +93,13 @@ Trwałe, dzielone per uruchomienie aplikacji (JSONL, 20 ostatnich sesji).
   zbieranie (przy 5 pollach/s to ~20 linii/s)
 
 Dane, które nie przeszły walidacji protokołu, nigdy nie trafiają na poziom widoczny
-domyślnie — surowa treść ląduje wyłącznie w `TRACE`, z eskejpowanymi znakami
-kontrolnymi i limitem 200 znaków. Datagram z nieznanego hosta nie jest logowany
-wcale (tylko adres i rozmiar, maks. raz na minutę na host).
+domyślnie — surowa treść ląduje wyłącznie w `TRACE`, **w całości**, ze zeskejpowanymi
+znakami kontrolnymi. Datagram z nieznanego hosta nie jest logowany wcale (tylko adres
+i rozmiar, maks. raz na minutę na host).
+
+Bezczynny polling nie loguje nic. `GETMSG` odbity pustym `ACK` (kolejka radia pusta)
+to stan spoczynkowy, więc jest pomijany — w logach zostają tylko zdarzenia: ramka
+z treścią, retransmisja, timeout i dane nieparsowalne.
 
 ## Komendy głosowe
 

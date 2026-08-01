@@ -159,14 +159,14 @@ final GlobalLog globalLog = GlobalLog();
 
 const int _maxUnverifiedChars = 200;
 
-/// Escapes control characters and caps length. Everything that has not passed
-/// protocol validation goes through here before reaching the log or the
-/// on-disk session file.
+/// Escapes control characters so unvalidated input cannot corrupt the log view
+/// or the session file. [maxLength] <= 0 leaves the content uncapped.
 String sanitizeForLog(String raw, {int maxLength = _maxUnverifiedChars}) {
+  final capped = maxLength > 0;
   final buf = StringBuffer();
   var written = 0;
   for (final rune in raw.runes) {
-    if (written >= maxLength) break;
+    if (capped && written >= maxLength) break;
     if (rune == 0x0A || rune == 0x0D || rune == 0x09) {
       buf.write(rune == 0x09 ? r'\t' : r'\n');
       written += 2;
@@ -178,7 +178,7 @@ String sanitizeForLog(String raw, {int maxLength = _maxUnverifiedChars}) {
       written++;
     }
   }
-  if (raw.length > maxLength) buf.write(' … (${raw.length} chars)');
+  if (capped && raw.length > maxLength) buf.write(' … (${raw.length} chars)');
   return buf.toString();
 }
 

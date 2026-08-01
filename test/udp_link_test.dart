@@ -299,13 +299,18 @@ void _unverifiedLoggingTests() {
       }
     });
 
-    test('a huge payload cannot flood one log line', () async {
+    test('a huge payload is kept in full at trace, not truncated', () async {
       await deliverRaw(utf8.encode('A' * 4000));
 
-      for (final e in globalLog.currentSession!.entries) {
-        expect(e.message.length, lessThan(600),
-            reason: 'unbounded log line from a ${4000}-byte payload');
-      }
+      final traces = globalLog.currentSession!.entries
+          .where((e) => e.level == LogLevel.trace && e.message.contains('raw payload'))
+          .toList();
+
+      expect(traces, isNotEmpty);
+      expect(traces.single.message, contains('A' * 4000),
+          reason: 'unparsed content must be recoverable in full');
+      expect(traces.single.message, isNot(contains('chars)')),
+          reason: 'no truncation marker');
     });
 
     test('an unparseable payload is reported without its content', () async {

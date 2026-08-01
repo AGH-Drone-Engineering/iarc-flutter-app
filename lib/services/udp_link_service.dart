@@ -180,13 +180,12 @@ class UdpLinkService implements MissionTransport {
     try {
       final message = MissionMessage.decode(text);
       logRx('← drone $droneId  $text', _tag);
-      logTrace(_tag, 'decoded ${message.type} q=${message.seq} from=$droneId');
       if (!_missionCtl.isClosed) _missionCtl.add(IncomingMission(droneId, message));
     } on UnsupportedMessageTypeException catch (e) {
       logWarn('Unsupported message from drone $droneId: ${e.messageType}', _tag);
     } on MissionMessageException catch (e) {
       logError('Bad payload from drone $droneId: ${e.message}', _tag);
-      logTrace(_tag, 'raw payload: ${sanitizeForLog(text)}');
+      logTrace(_tag, 'raw payload: ${sanitizeForLog(text, maxLength: 0)}');
     }
   }
 

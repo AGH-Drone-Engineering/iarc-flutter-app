@@ -36,6 +36,18 @@ void main() {
       expect(round['m'] as String, isNot(contains('\x00')));
     });
 
+    test('maxLength <= 0 leaves the content uncapped but still escaped', () {
+      final long = 'x' * 5000;
+      expect(sanitizeForLog(long, maxLength: 0), long);
+      expect(sanitizeForLog(long, maxLength: 0), isNot(contains('chars)')));
+
+      final nasty = '${'A' * 3000}\n\x00';
+      final out = sanitizeForLog(nasty, maxLength: 0);
+      expect(out, contains('A' * 3000));
+      expect(out, isNot(contains('\n')));
+      expect(out, isNot(contains('\x00')));
+    });
+
     test('a full-length binary blob cannot blow up a log line', () {
       final blob = String.fromCharCodes(List.generate(3072, (i) => i % 256));
       final out = sanitizeForLog(blob);
