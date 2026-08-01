@@ -1,4 +1,3 @@
-// lib/screens/map_tab.dart
 import 'dart:async';
 import 'dart:io' show Platform;
 import 'dart:math' as math;
@@ -62,7 +61,6 @@ class _MapTabState extends State<MapTab> {
       }
     });
 
-    // High-frequency, sub-second location updates
     final locationSettings = Platform.isAndroid
         ? AndroidSettings(
       accuracy: LocationAccuracy.bestForNavigation,
@@ -82,7 +80,6 @@ class _MapTabState extends State<MapTab> {
 
       setState(() => _user = next);
 
-      // Recenter on every GPS tick unless the user is actively panning
       if (!_isUserPanning) {
         _mapController.move(next, _zoom);
       }
@@ -97,7 +94,6 @@ class _MapTabState extends State<MapTab> {
       _centerLat = cam.center.latitude;
       _mapRotationDeg = cam.rotation;
 
-      // Track panning state
       if (evt is MapEventMoveStart) {
         _isUserPanning = true;
         _recenterTimer?.cancel();
@@ -105,7 +101,6 @@ class _MapTabState extends State<MapTab> {
         _isUserPanning = true;
       } else if (evt is MapEventMoveEnd) {
         _isUserPanning = false;
-        // Optional snap-back when drag ends (kept for UX)
         if (_user != null) {
           _mapController.move(_user!, _zoom);
         }
@@ -157,7 +152,6 @@ class _MapTabState extends State<MapTab> {
   Widget build(BuildContext context) {
     final app = context.watch<AppState>();
 
-    // If the user just turned rotation OFF, gently reset map to north-up once.
     final rotatePref = app.rotateWithCompass;
     if (_lastRotatePref != rotatePref) {
       if (!rotatePref && _mapRotationDeg.abs() > 0.5) {
@@ -187,8 +181,7 @@ class _MapTabState extends State<MapTab> {
     double userMarkerPx = (oneMeterPx * 0.7).clamp(6.0, 18.0).toDouble();
     final userMarkerRadius = userMarkerPx / 2.0;
 
-    final drones = Drone.registeredDronesMap.values.toList()
-      ..sort((a, b) => a.id.compareTo(b.id));
+    final drones = Drone.all;
 
     return Stack(
       children: [
@@ -209,23 +202,51 @@ class _MapTabState extends State<MapTab> {
 
             if (polygon.isNotEmpty) PolygonLayer(polygons: polygon),
 
-            // 1m ground dots
-            for (var i = 0; i < drones.length; i++)
+            for (final d in drones)
               GroundDotsLayer(
-                points: drones[i].points,
+                points: d.track,
                 diameterMeters: 1.0,
-                color: drones[i].mineDisplayColor,
+                color: d.color,
                 minPixelDiameter: 3.0,
               ),
 
-            if (app.singlePoint != null)
+            if (app.mines.isNotEmpty)
               GroundDotsLayer(
-                points: [app.singlePoint!],
+                points: [for (final m in app.mines) m.position],
                 diameterMeters: 1.0,
                 color: Colors.purpleAccent,
-                minPixelDiameter: 3.0,
+                minPixelDiameter: 4.0,
                 innerColor: Colors.purpleAccent,
               ),
+
+            MarkerLayer(
+              markers: [
+                for (final d in drones)
+                  if (d.position != null)
+                    Marker(
+                      point: d.position!,
+                      width: 26,
+                      height: 26,
+                      child: Container(
+                        decoration: BoxDecoration(
+                          color: d.color,
+                          shape: BoxShape.circle,
+                          border: Border.all(color: Colors.black87, width: 2),
+                        ),
+                        child: Center(
+                          child: Text(
+                            '${d.id}',
+                            style: const TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.black87,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+              ],
+            ),
             if (_user != null)
               CircleLayer(
                 circles: [
@@ -241,7 +262,6 @@ class _MapTabState extends State<MapTab> {
           ],
         ),
 
-        // Heading chip
         Positioned(
           right: 12,
           top: 12,

@@ -1,17 +1,26 @@
 import 'dart:async';
+
 import 'package:flutter/material.dart';
 
-class DroneStatusTile extends StatefulWidget {
-  final DateTime? lastMessageAt;
-  final String droneId;
-  final int points;
+import '../models/drone.dart';
+import '../models/mission_message.dart';
+import '../services/command_tracker.dart';
 
+class DroneStatusTile extends StatefulWidget {
   const DroneStatusTile({
     super.key,
-    required this.lastMessageAt,
-    required this.droneId,
-    required this.points,
+    required this.drone,
+    this.awaitingAck = false,
+    this.failure,
+    this.onTap,
+    this.selected = false,
   });
+
+  final Drone drone;
+  final bool awaitingAck;
+  final AckFailure? failure;
+  final VoidCallback? onTap;
+  final bool selected;
 
   @override
   State<DroneStatusTile> createState() => _DroneStatusTileState();
@@ -24,20 +33,8 @@ class _DroneStatusTileState extends State<DroneStatusTile> {
   void initState() {
     super.initState();
     _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (mounted) {
-        setState(() {});
-      }
+      if (mounted) setState(() {});
     });
-  }
-
-  @override
-  void didUpdateWidget(covariant DroneStatusTile oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.lastMessageAt != widget.lastMessageAt) {
-      if (mounted) {
-        setState(() {});
-      }
-    }
   }
 
   @override
@@ -46,63 +43,131 @@ class _DroneStatusTileState extends State<DroneStatusTile> {
     super.dispose();
   }
 
+  Color _stateColor(ColorScheme scheme) {
+    final d = widget.drone;
+    if (widget.failure?.isCritical ?? false) return scheme.error;
+    if (!d.hasEverReported) return scheme.outline;
+    if (d.isStale) return scheme.error;
+    return switch (d.state) {
+      DroneState.killed || DroneState.error => scheme.error,
+      DroneState.idle || DroneState.landed || DroneState.boot => scheme.outline,
+      _ => Colors.green,
+    };
+  }
+
+  String get _lastSeenText {
+    final since = widget.drone.sinceLastSeen;
+    if (since == null) return 'never seen';
+    if (since.inSeconds < 2) return 'just now';
+    if (since.inSeconds < 60) return '${since.inSeconds}s ago';
+    if (since.inMinutes < 60) return '${since.inMinutes}m ago';
+    if (since.inHours < 24) return '${since.inHours}h ago';
+    return '${since.inDays}d ago';
+  }
+
+  String _telemetryLine(Drone d) {
+    if (d.position == null) return 'no telemetry';
+    return [
+      '${d.position!.latitude.toStringAsFixed(6)}, '
+          '${d.position!.longitude.toStringAsFixed(6)}',
+      if (d.altitude != null) '${d.altitude!.toStringAsFixed(1)} m',
+    ].join('  ·  ');
+  }
+
   @override
   Widget build(BuildContext context) {
-    final lastSeen = _formatAgo(widget.lastMessageAt);
-    return Card(
-      elevation: 1,
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+    final scheme = Theme.of(context).colorScheme;
+    final d = widget.drone;
+    final stateColor = _stateColor(scheme);
+
+    return Material(
+      color: widget.selected
+          ? scheme.secondaryContainer
+          : scheme.surfaceContainerHighest.withValues(alpha: 0.5),
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        onTap: widget.onTap,
+        borderRadius: BorderRadius.circular(12),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          child: Row(
+            children: [
+              Container(
+                width: 10,
+                height: 10,
+                decoration: BoxDecoration(color: stateColor, shape: BoxShape.circle),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Flexible(
+                          child: Text(
+                            d.name,
+                            style: const TextStyle(fontWeight: FontWeight.w600),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          d.hasEverReported ? d.state.wire : '—',
+                          style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                                color: stateColor,
+                                fontWeight: FontWeight.w700,
+                              ),
+                        ),
+                        if (widget.awaitingAck) ...[
+                          const SizedBox(width: 8),
+                          SizedBox(
+                            width: 10,
+                            height: 10,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 1.5,
+                              color: scheme.primary,
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      _telemetryLine(d),
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            fontFeatures: const [FontFeature.tabularFigures()],
+                          ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
                 mainAxisSize: MainAxisSize.min,
                 children: [
+                  if (d.battery != null)
+                    Text(
+                      '${d.battery!.toStringAsFixed(1)} V',
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w600,
+                        fontFeatures: [FontFeature.tabularFigures()],
+                      ),
+                    ),
                   Text(
-                    widget.droneId,
-                    style: Theme.of(context).textTheme.titleMedium,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    'Last seen: $lastSeen',
-                    style: Theme.of(context).textTheme.bodySmall,
+                    _lastSeenText,
+                    style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                          color: d.isStale ? scheme.error : null,
+                        ),
                   ),
                 ],
               ),
-            ),
-            const SizedBox(width: 8),
-            Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                Text('Points: ${widget.points}',
-                    style: Theme.of(context).textTheme.bodyMedium),
-              ],
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
-  }
-
-  String _formatAgo(DateTime? ts) {
-    if (ts == null) return '—';
-    var diff = DateTime.now().difference(ts);
-    if (diff.isNegative) diff = Duration.zero;
-
-    if (diff.inSeconds < 60) return '${diff.inSeconds}s ago';
-    if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
-    if (diff.inHours < 24) {
-      final h = diff.inHours;
-      final m = diff.inMinutes.remainder(60);
-      return m == 0 ? '${h}h ago' : '${h}h ${m}m ago';
-    }
-    final d = diff.inDays;
-    final h = diff.inHours.remainder(24);
-    return h == 0 ? '${d}d ago' : '${d}d ${h}h ago';
   }
 }

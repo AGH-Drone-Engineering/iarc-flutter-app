@@ -1,55 +1,165 @@
-// lib/services/global_log.dart
-import 'dart:collection';
-import 'package:flutter/material.dart';
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:flutter/foundation.dart';
+import 'package:path_provider/path_provider.dart';
 
 import '../models/log.dart';
 
-final Map<LogLevels, Color> colorMap = {
-  LogLevels.warn: Colors.deepOrange,
-  LogLevels.error: Colors.red.shade900,
-  LogLevels.info: Colors.grey,
-  LogLevels.received: Colors.green,
-  LogLevels.sent: Colors.purple
-};
-
 class GlobalLog extends ChangeNotifier {
-  GlobalLog({this.capacity = 500});
+  GlobalLog({this.capacity = 5000, this.maxSessions = 20});
+
   final int capacity;
-  bool _verbose = false;
-  bool get verbose => _verbose;
+  final int maxSessions;
 
-  final List<Log> _logs = [];
-  UnmodifiableListView<Log> get logs => _verbose ? UnmodifiableListView(_logs) : UnmodifiableListView(_logs.where((e) => e.level != LogLevels.info).toList());
+  LogSession? _current;
+  final List<LogSession> _past = [];
 
-  void add(LogLevels level, String message, [DateTime? ts]) {
-    _logs.add(Log(level, message, ts));
-    if (_logs.length > capacity) {
-      _logs.removeRange(0, _logs.length - capacity);
-    }
-    notifyListeners(); // <-- UI gets rebuilt
-  }
+  Directory? _dir;
+  IOSink? _sink;
+  final List<LogEntry> _pending = [];
+  Timer? _flushTimer;
 
-  void setVerbose(bool v) {
-    _verbose = v;
+  bool _traceEnabled = true;
+  bool get traceEnabled => _traceEnabled;
+
+  LogSession? get currentSession => _current;
+  List<LogSession> get pastSessions => List.unmodifiable(_past);
+
+  void setTraceEnabled(bool v) {
+    if (_traceEnabled == v) return;
+    _traceEnabled = v;
+    add(LogLevel.info, 'app', 'Tracing ${v ? "enabled" : "disabled"}');
     notifyListeners();
   }
 
-  void clear() {
-    _logs.clear();
-    notifyListeners(); // <-- UI gets rebuilt
+  Future<void> init() async {
+    final now = DateTime.now();
+    _current = LogSession(id: now.toIso8601String().replaceAll(':', '-'), startedAt: now);
+
+    try {
+      final base = await getApplicationDocumentsDirectory();
+      _dir = Directory('${base.path}/logs');
+      await _dir!.create(recursive: true);
+      await _loadPastSessions();
+      await _prune();
+      _sink = File('${_dir!.path}/${_current!.id}.jsonl').openWrite(mode: FileMode.append);
+    } catch (e) {
+      debugPrint('Log persistence unavailable: $e');
+    }
+
+    _flushTimer = Timer.periodic(const Duration(seconds: 2), (_) => flush());
+    add(LogLevel.info, 'app', 'Session started');
+    notifyListeners();
+  }
+
+  Future<void> _loadPastSessions() async {
+    final dir = _dir;
+    if (dir == null) return;
+
+    final files = (await dir.list().toList())
+        .whereType<File>()
+        .where((f) => f.path.endsWith('.jsonl'))
+        .toList()
+      ..sort((a, b) => b.path.compareTo(a.path));
+
+    for (final f in files) {
+      final id = f.uri.pathSegments.last.replaceAll('.jsonl', '');
+      if (id == _current?.id) continue;
+      final started = DateTime.tryParse(_restoreColons(id));
+      if (started == null) continue;
+      _past.add(LogSession(id: id, startedAt: started));
+    }
+  }
+
+  static String _restoreColons(String id) {
+    final t = id.indexOf('T');
+    if (t < 0) return id;
+    return '${id.substring(0, t)}T${id.substring(t + 1).replaceAll('-', ':')}';
+  }
+
+  /// Past sessions are stored on disk only; entries load on demand.
+  Future<void> loadSessionEntries(LogSession session) async {
+    if (session.entries.isNotEmpty || _dir == null) return;
+    final file = File('${_dir!.path}/${session.id}.jsonl');
+    if (!await file.exists()) return;
+
+    for (final line in await file.readAsLines()) {
+      if (line.trim().isEmpty) continue;
+      try {
+        session.entries.add(LogEntry.fromJson(jsonDecode(line) as Map<String, Object?>));
+      } catch (_) {}
+    }
+    notifyListeners();
+  }
+
+  Future<void> _prune() async {
+    while (_past.length > maxSessions) {
+      final old = _past.removeLast();
+      try {
+        await File('${_dir!.path}/${old.id}.jsonl').delete();
+      } catch (_) {}
+    }
+  }
+
+  void add(LogLevel level, String tag, String message) {
+    final session = _current;
+    if (session == null) return;
+    if (level == LogLevel.trace && !_traceEnabled) return;
+
+    final entry = LogEntry(level, tag, message);
+    session.entries.add(entry);
+    if (session.entries.length > capacity) {
+      session.entries.removeRange(0, session.entries.length - capacity);
+    }
+    _pending.add(entry);
+    notifyListeners();
+  }
+
+  Future<void> flush() async {
+    if (_pending.isEmpty || _sink == null) return;
+    final batch = List<LogEntry>.from(_pending);
+    _pending.clear();
+    try {
+      for (final e in batch) {
+        _sink!.writeln(jsonEncode(e.toJson()));
+      }
+      await _sink!.flush();
+    } catch (e) {
+      debugPrint('Log flush failed: $e');
+    }
+  }
+
+  Future<void> clearCurrent() async {
+    _current?.entries.clear();
+    _pending.clear();
+    notifyListeners();
+  }
+
+  Future<void> deleteAllSessions() async {
+    for (final s in _past) {
+      try {
+        await File('${_dir!.path}/${s.id}.jsonl').delete();
+      } catch (_) {}
+    }
+    _past.clear();
+    notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _flushTimer?.cancel();
+    flush().then((_) => _sink?.close());
+    super.dispose();
   }
 }
 
 final GlobalLog globalLog = GlobalLog();
 
-void addLog(LogLevels level, String message, [DateTime? ts]) =>
-    globalLog.add(level, message, ts);
-void clearLogs() => globalLog.clear();
-
-// Convenience shorthands:
-void logInfo(String m) => addLog(LogLevels.info, m);
-void logWarn(String m) => addLog(LogLevels.warn, m);
-void logError(String m) => addLog(LogLevels.error, m);
-void logRx(String m) => addLog(LogLevels.received, m);
-void logSnt(String m) => addLog(LogLevels.sent, m);
-
+void logTrace(String tag, String m) => globalLog.add(LogLevel.trace, tag, m);
+void logInfo(String m, [String tag = '']) => globalLog.add(LogLevel.info, tag, m);
+void logWarn(String m, [String tag = '']) => globalLog.add(LogLevel.warn, tag, m);
+void logError(String m, [String tag = '']) => globalLog.add(LogLevel.error, tag, m);
+void logRx(String m, [String tag = '']) => globalLog.add(LogLevel.received, tag, m);
+void logSnt(String m, [String tag = '']) => globalLog.add(LogLevel.sent, tag, m);

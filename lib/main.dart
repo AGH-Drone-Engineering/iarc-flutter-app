@@ -1,25 +1,27 @@
-// lib/main.dart
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:flutter_map_tile_caching/flutter_map_tile_caching.dart' as fmtc;
 
-import 'services/global_log.dart';   // <-- global logger (ChangeNotifier singleton)
+import 'models/drone.dart';
+import 'services/global_log.dart';
 import 'state/app_state.dart';
 import 'screens/map_tab.dart';
 import 'screens/logs_tab.dart';
 import 'screens/esp_data_tab.dart';
 import 'screens/inputs_tab.dart';
+import 'screens/mission_tab.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Location permission (for the user location layer)
+  await globalLog.init();
+  Drone.ensureRegistered();
   await Geolocator.requestPermission();
 
-  // FMTC v10+ initialisation (backend) + create a store named "OSM"
   await fmtc.FMTCObjectBoxBackend().initialise();
   await fmtc.FMTCStore('OSM').manage.create();
+
   final appState = AppState();
   await appState.init();
 
@@ -28,19 +30,24 @@ Future<void> main() async {
 
 class MyApp extends StatelessWidget {
   const MyApp({super.key, required this.appState});
+
   final AppState appState;
 
   @override
   Widget build(BuildContext context) {
     return MultiProvider(
       providers: [
-        ChangeNotifierProvider(create: (_) => AppState()..init()),
-        // Provide the global logger so widgets can watch it and rebuild on notifyListeners()
+        ChangeNotifierProvider<AppState>.value(value: appState),
         ChangeNotifierProvider<GlobalLog>.value(value: globalLog),
       ],
       child: MaterialApp(
-        title: 'IARC 2025 App',
+        title: 'IARC 2026',
         theme: ThemeData(useMaterial3: true, colorSchemeSeed: Colors.indigo),
+        darkTheme: ThemeData(
+          useMaterial3: true,
+          colorSchemeSeed: Colors.indigo,
+          brightness: Brightness.dark,
+        ),
         home: const HomeTabs(),
       ),
     );
@@ -49,27 +56,71 @@ class MyApp extends StatelessWidget {
 
 class HomeTabs extends StatefulWidget {
   const HomeTabs({super.key});
+
   @override
   State<HomeTabs> createState() => _HomeTabsState();
 }
 
 class _HomeTabsState extends State<HomeTabs> {
-  int _index = 1;
-  final _pages = const [MapTab(), LogsTab(), EspDataTab(), InputsTab()];
+  int _index = 0;
+
+  static const _pages = <Widget>[
+    MissionTab(),
+    MapTab(),
+    InputsTab(),
+    LogsTab(),
+    EspDataTab(),
+  ];
+
+  static const _destinations = <NavigationDestination>[
+    NavigationDestination(
+      icon: Icon(Icons.rocket_launch_outlined),
+      selectedIcon: Icon(Icons.rocket_launch),
+      label: 'Mission',
+    ),
+    NavigationDestination(icon: Icon(Icons.map_outlined), label: 'Map'),
+    NavigationDestination(icon: Icon(Icons.edit_location_alt), label: 'Field'),
+    NavigationDestination(icon: Icon(Icons.list_alt), label: 'Logs'),
+    NavigationDestination(icon: Icon(Icons.usb), label: 'Link'),
+  ];
 
   @override
   Widget build(BuildContext context) {
+    final app = context.watch<AppState>();
+    final alerts = app.tracker.failures.length;
+
     return Scaffold(
-      appBar: AppBar(title: const Text('IARC 2025 App')),
-      body: _pages[_index],
+      appBar: AppBar(
+        title: const Text('IARC 2026'),
+        actions: [
+          if (!app.isConnected)
+            Padding(
+              padding: const EdgeInsets.only(right: 12),
+              child: Chip(
+                visualDensity: VisualDensity.compact,
+                avatar: const Icon(Icons.usb_off, size: 16),
+                label: const Text('Offline'),
+              ),
+            ),
+        ],
+      ),
+      body: IndexedStack(index: _index, children: _pages),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _index,
         onDestinationSelected: (i) => setState(() => _index = i),
-        destinations: const [
-          NavigationDestination(icon: Icon(Icons.map_outlined), label: 'Map'),
-          NavigationDestination(icon: Icon(Icons.list_alt), label: 'Logs'),
-          NavigationDestination(icon: Icon(Icons.usb), label: 'ESP'),
-          NavigationDestination(icon: Icon(Icons.edit_location_alt), label: 'Inputs'),
+        destinations: [
+          for (var i = 0; i < _destinations.length; i++)
+            if (i == 0 && alerts > 0)
+              NavigationDestination(
+                icon: Badge.count(count: alerts, child: _destinations[i].icon),
+                selectedIcon: Badge.count(
+                  count: alerts,
+                  child: _destinations[i].selectedIcon ?? _destinations[i].icon,
+                ),
+                label: _destinations[i].label,
+              )
+            else
+              _destinations[i],
         ],
       ),
     );

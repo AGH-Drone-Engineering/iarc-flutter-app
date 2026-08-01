@@ -19,6 +19,7 @@ dependencies:
   flutter_map_location_marker:
   speech_to_text:
   shared_preferences:
+  path_provider:
 
 dev_dependencies:
   flutter_test:
