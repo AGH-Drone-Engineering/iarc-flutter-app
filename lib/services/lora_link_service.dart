@@ -188,7 +188,7 @@ class LoraLinkService implements MissionTransport {
       _writeRaw(LoraFrame.request(LoraFrameType.ack));
 
       final text = utf8.decode(reply.payload, allowMalformed: true);
-      logInfo('Ground ESP config: $text', _tag);
+      logInfo('Ground ESP config: ${sanitizeForLog(text)}', _tag);
       for (final pair in text.split(RegExp(r'\s+'))) {
         final kv = pair.split('=');
         if (kv.length == 2 && kv[0] == 'CMDB_ID') {
@@ -242,7 +242,7 @@ class LoraLinkService implements MissionTransport {
       logWarn('Unsupported message from node $from: ${e.messageType}', _tag);
     } on MissionMessageException catch (e) {
       logError('Bad payload from node $from: ${e.message}', _tag);
-      logTrace(_tag, 'raw payload: $text');
+      logTrace(_tag, 'raw payload: ${sanitizeForLog(text)}');
     }
   }
 
@@ -308,9 +308,15 @@ class LoraLinkService implements MissionTransport {
     final result = _parser.feed(data);
 
     if (result.noise.isNotEmpty) {
-      final text = utf8.decode(result.noise, allowMalformed: true).trim();
-      if (text.isNotEmpty) logInfo('ESP: $text', _tag);
-      logTrace(_tag, 'discarded ${result.noise.length} unframed byte(s)');
+      // Unframed bytes are whatever happened to be on the wire. Only surface
+      // them as a firmware log line if they actually read as text.
+      if (printableRatio(result.noise) >= 0.9) {
+        final text = utf8.decode(result.noise, allowMalformed: true).trim();
+        if (text.isNotEmpty) logInfo('ESP: ${sanitizeForLog(text)}', _tag);
+      } else {
+        logTrace(_tag, 'discarded ${result.noise.length} unframed byte(s): '
+            '${_hex(result.noise)}');
+      }
     }
 
     for (final frame in result.frames) {

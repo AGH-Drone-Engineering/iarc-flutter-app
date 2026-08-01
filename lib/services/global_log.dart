@@ -157,6 +157,40 @@ class GlobalLog extends ChangeNotifier {
 
 final GlobalLog globalLog = GlobalLog();
 
+const int _maxUnverifiedChars = 200;
+
+/// Escapes control characters and caps length. Everything that has not passed
+/// protocol validation goes through here before reaching the log or the
+/// on-disk session file.
+String sanitizeForLog(String raw, {int maxLength = _maxUnverifiedChars}) {
+  final buf = StringBuffer();
+  var written = 0;
+  for (final rune in raw.runes) {
+    if (written >= maxLength) break;
+    if (rune == 0x0A || rune == 0x0D || rune == 0x09) {
+      buf.write(rune == 0x09 ? r'\t' : r'\n');
+      written += 2;
+    } else if (rune < 0x20 || rune == 0x7F) {
+      buf.write('\\x${rune.toRadixString(16).padLeft(2, '0')}');
+      written += 4;
+    } else {
+      buf.writeCharCode(rune);
+      written++;
+    }
+  }
+  if (raw.length > maxLength) buf.write(' … (${raw.length} chars)');
+  return buf.toString();
+}
+
+/// Share of bytes that are printable ASCII — used to tell a firmware log line
+/// from line noise.
+double printableRatio(List<int> bytes) {
+  if (bytes.isEmpty) return 0;
+  final printable =
+      bytes.where((b) => (b >= 0x20 && b < 0x7F) || b == 0x0A || b == 0x0D).length;
+  return printable / bytes.length;
+}
+
 void logTrace(String tag, String m) => globalLog.add(LogLevel.trace, tag, m);
 void logInfo(String m, [String tag = '']) => globalLog.add(LogLevel.info, tag, m);
 void logWarn(String m, [String tag = '']) => globalLog.add(LogLevel.warn, tag, m);

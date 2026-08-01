@@ -28,12 +28,21 @@ jobs:
 
       - run: flutter pub get
 
-      # Build both AAB and per-ABI APKs
+      # Build both AAB and per-ABI APKs (armeabi-v7a + arm64-v8a only)
       - run: flutter build appbundle --release
-      - run: flutter build apk --release --split-per-abi
+      - run: flutter build apk --release --split-per-abi --target-platform android-arm,android-arm64
 
       # optional: show where the files landed if debugging paths
       - run: ls -R build/app/outputs || true
+
+      - name: Collect and rename release assets
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          mkdir -p dist
+          mv build/app/outputs/flutter-apk/app-arm64-v8a-release.apk "dist/iarc-app-${VERSION}.apk"
+          mv build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk "dist/iarc-app-x32-${VERSION}.apk"
+          mv build/app/outputs/bundle/release/app-release.aab "dist/iarc-app-${VERSION}.aab"
+          ls -l dist
 
       # Create (or update) the Release for this tag and upload assets
       - name: Upload to GitHub Release
@@ -41,9 +50,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         with:
           tag_name: ${{ github.ref_name }}
-          files: |
-            build/app/outputs/flutter-apk/*-release.apk
-            build/app/outputs/bundle/release/*.aab
+          files: dist/*
           fail_on_unmatched_files: true
           overwrite_files: true
 

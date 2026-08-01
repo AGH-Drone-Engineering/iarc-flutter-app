@@ -92,6 +92,11 @@ Trwałe, dzielone per uruchomienie aplikacji (JSONL, 20 ostatnich sesji).
 - `TRACE` domyślnie zbierany, ale ukryty; przełącznik `Capture trace` wyłącza
   zbieranie (przy 5 pollach/s to ~20 linii/s)
 
+Dane, które nie przeszły walidacji protokołu, nigdy nie trafiają na poziom widoczny
+domyślnie — surowa treść ląduje wyłącznie w `TRACE`, z eskejpowanymi znakami
+kontrolnymi i limitem 200 znaków. Datagram z nieznanego hosta nie jest logowany
+wcale (tylko adres i rozmiar, maks. raz na minutę na host).
+
 ## Komendy głosowe
 
 Na początku może wystąpić desygnacja drona (`dron 2`, `wszystkie`, `Bajer 3`).
@@ -109,7 +114,7 @@ Na początku może wystąpić desygnacja drona (`dron 2`, `wszystkie`, `Bajer 3`
 # Development
 
 ```bash
-flutter test        # 74 testy
+flutter test        # 87 testów
 flutter analyze
 flutter build apk --release --split-per-abi
 ```

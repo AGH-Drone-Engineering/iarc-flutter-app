@@ -5,6 +5,8 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:flutter_esp_android_communication/models/link_config.dart';
+import 'package:flutter_esp_android_communication/models/log.dart';
+import 'package:flutter_esp_android_communication/services/global_log.dart';
 import 'package:flutter_esp_android_communication/models/mission_message.dart';
 import 'package:flutter_esp_android_communication/services/mission_transport.dart';
 import 'package:flutter_esp_android_communication/services/udp_link_service.dart';
@@ -41,8 +43,10 @@ class FakeDrone {
     return _onReceive!.future.timeout(timeout);
   }
 
-  void reply(MissionMessage message) {
-    _socket.send(utf8.encode(message.encode()), _lastSender!, _lastSenderPort!);
+  void reply(MissionMessage message) => replyRaw(utf8.encode(message.encode()));
+
+  void replyRaw(List<int> bytes) {
+    _socket.send(bytes, _lastSender!, _lastSenderPort!);
   }
 
   void close() => _socket.close();
@@ -58,6 +62,8 @@ LinkConfig configFor(FakeDrone drone, {int droneId = 1, int listenPort = 0}) =>
     );
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   group('LinkConfig', () {
     test('round-trips through JSON', () {
       final original = LinkConfig(
@@ -103,6 +109,8 @@ void main() {
       expect(const UdpEndpoint(droneId: 1, host: 'x', port: 1).isConfigured, isTrue);
     });
   });
+
+  _unverifiedLoggingTests();
 
   group('UdpLinkService', () {
     late FakeDrone drone;
@@ -231,6 +239,83 @@ void main() {
         isTrue,
         reason: 'the previous socket must have been released',
       );
+    });
+  });
+}
+
+/// Anything that has not passed protocol validation must not reach a level the
+/// operator sees by default, and must never reach the log unescaped.
+void _unverifiedLoggingTests() {
+  group('unverified input', () {
+    late FakeDrone drone;
+    late UdpLinkService link;
+
+    setUp(() async {
+      await globalLog.init();
+      await globalLog.clearCurrent();
+      drone = await FakeDrone.bind();
+      link = UdpLinkService();
+      await link.connect(configFor(drone));
+    });
+
+    tearDown(() async {
+      await link.dispose();
+      drone.close();
+    });
+
+    List<LogEntry> entriesAbove(LogLevel min) => globalLog.currentSession!.entries
+        .where((e) => e.level.index >= min.index)
+        .toList();
+
+    Future<void> deliverRaw(List<int> bytes) async {
+      final pending = drone.nextMessage();
+      await link.sendMission(1, StatusMessage(seq: 1));
+      await pending;
+      drone.replyRaw(bytes);
+      await Future<void>.delayed(const Duration(milliseconds: 120));
+    }
+
+    test('a garbage payload never appears verbatim at a visible level', () async {
+      const garbage = 'TOTALLY-NOT-OUR-PROTOCOL-\u0000\u0001';
+      await deliverRaw(utf8.encode(garbage));
+
+      for (final e in entriesAbove(LogLevel.info)) {
+        expect(e.message, isNot(contains('TOTALLY-NOT-OUR-PROTOCOL')),
+            reason: 'raw unverified bytes leaked into ${e.level.label}');
+      }
+    });
+
+    test('the raw payload is kept at trace, escaped', () async {
+      await deliverRaw(utf8.encode('{"broken"\n\u0000'));
+
+      final traces = globalLog.currentSession!.entries
+          .where((e) => e.level == LogLevel.trace && e.message.contains('raw payload'))
+          .toList();
+
+      expect(traces, isNotEmpty, reason: 'the payload should still be recoverable');
+      for (final t in traces) {
+        expect(t.message, isNot(contains('\n')));
+        expect(t.message, isNot(contains('\u0000')));
+      }
+    });
+
+    test('a huge payload cannot flood one log line', () async {
+      await deliverRaw(utf8.encode('A' * 4000));
+
+      for (final e in globalLog.currentSession!.entries) {
+        expect(e.message.length, lessThan(600),
+            reason: 'unbounded log line from a ${4000}-byte payload');
+      }
+    });
+
+    test('an unparseable payload is reported without its content', () async {
+      await deliverRaw(utf8.encode('SECRETMARKER'));
+
+      final errors = entriesAbove(LogLevel.warn);
+      expect(errors, isNotEmpty, reason: 'the operator should still be told');
+      for (final e in errors) {
+        expect(e.message, isNot(contains('SECRETMARKER')));
+      }
     });
   });
 }

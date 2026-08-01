@@ -21,6 +21,7 @@ class UdpLinkService implements MissionTransport {
 
   final Map<int, InternetAddress> _addressOf = {};
   final Map<String, int> _droneAt = {};
+  final Map<String, DateTime> _lastStrangerWarning = {};
 
   final _stateCtl = StreamController<LinkState>.broadcast();
   final _statusCtl = StreamController<String>.broadcast();
@@ -171,7 +172,7 @@ class UdpLinkService implements MissionTransport {
     logTrace(_tag, 'RX $source:${datagram.port} ${datagram.data.length}B');
 
     if (droneId == null) {
-      logWarn('Datagram from unmapped host $source — check the endpoint config', _tag);
+      _warnAboutStranger(source, datagram.data.length);
       return;
     }
 
@@ -185,8 +186,23 @@ class UdpLinkService implements MissionTransport {
       logWarn('Unsupported message from drone $droneId: ${e.messageType}', _tag);
     } on MissionMessageException catch (e) {
       logError('Bad payload from drone $droneId: ${e.message}', _tag);
-      logTrace(_tag, 'raw payload: $text');
+      logTrace(_tag, 'raw payload: ${sanitizeForLog(text)}');
     }
+  }
+
+  /// The listen port is open to the whole network, so an unmapped sender is
+  /// untrusted: never log its payload, and warn at most once a minute per host
+  /// so a flood cannot bury the log.
+  void _warnAboutStranger(String source, int length) {
+    final now = DateTime.now();
+    final last = _lastStrangerWarning[source];
+    if (last != null && now.difference(last) < const Duration(minutes: 1)) {
+      logTrace(_tag, 'ignored ${length}B from unmapped $source');
+      return;
+    }
+    _lastStrangerWarning[source] = now;
+    logWarn('Ignoring ${length}B from unmapped host $source '
+        '— check the endpoint config', _tag);
   }
 
   @override
@@ -198,6 +214,7 @@ class UdpLinkService implements MissionTransport {
     _socket = null;
     _addressOf.clear();
     _droneAt.clear();
+    _lastStrangerWarning.clear();
     _setState(LinkState.disconnected, 'Disconnected');
   }
 
