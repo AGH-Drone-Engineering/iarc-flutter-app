@@ -123,35 +123,28 @@ GridPath columnsToPath(List<int> columns, int green) =>
 
 /// Komórki, których ścieżka musi unikać, żeby B wyszło dokładnie 0.
 ///
-/// Przy strefie prostopadłej to **krzyż**, nie kwadrat. B = 0 wymaga dwóch
-/// rzeczy naraz:
+/// Strefa jest symetryczna, więc warunek odwraca się wprost: mina trafia do
+/// strefy dokładnie wtedy, gdy ścieżka wejdzie w jej strefę. Blokadą jest więc
+/// ten sam kształt, tylko postawiony wokół miny -- romb dla strefy rombowej,
+/// kwadrat dla [GreenZoneShape.square], krzyż dla
+/// [GreenZoneShape.perpendicular].
 ///
-/// * w wierszu miny żadna komórka ścieżki nie leży bliżej niż G kolumn
-///   (poziome ramię, bo tam strefa rozszerza się o G),
-/// * w kolumnie miny ścieżka nie stoi w żadnym z wierszy `my ± G`
-///   (pionowe ramię, bo poziomy przejazd przenosi w pionie samą szerokość).
-///
-/// Poza tymi dwoma ramionami mina jest bezpieczna -- kwadrat byłby tu
-/// nadmiarowy i odrzucałby poprawne ścieżki.
+/// Do tego dochodzi rozdmuchanie miny o `mineInflation`, chroniące przed błędem
+/// GPS niezależnie od G.
 Set<Cell> zeroMissedBlocked(GridField field, int green, ScoreParams params) {
   final out = <Cell>{...field.outside};
-  final reach = params.mineInflation;
+  final infl = params.mineInflation;
   for (final mine in field.mines) {
-    for (var dx = -reach; dx <= reach; dx++) {
-      for (var dy = -reach; dy <= reach; dy++) {
+    for (var dx = -infl; dx <= infl; dx++) {
+      for (var dy = -infl; dy <= infl; dy++) {
         out.add(Cell(mine.x + dx, mine.y + dy));
       }
     }
-    if (params.shape == GreenZoneShape.square) {
-      for (var dx = -green; dx <= green; dx++) {
-        for (var dy = -green; dy <= green; dy++) {
-          out.add(Cell(mine.x + dx, mine.y + dy));
-        }
-      }
-    } else {
-      for (var d = -green; d <= green; d++) {
-        out.add(Cell(mine.x + d, mine.y));
-        out.add(Cell(mine.x, mine.y + d));
+    for (var dy = -green; dy <= green; dy++) {
+      final reach = zoneReach(green, dy, params.shape);
+      if (reach < 0) continue;
+      for (var dx = -reach; dx <= reach; dx++) {
+        out.add(Cell(mine.x + dx, mine.y + dy));
       }
     }
   }
@@ -279,7 +272,7 @@ int _popcount32(int v) {
 /// odcinki ścieżki plus poziomy w tym wierszu sklejają się w `[lo-G, hi+G]`).
 /// Dla pozostałych wierszy okna liczy się goły odcinek poziomy.
 class _CoverMasks {
-  _CoverMasks(GridField field, int green, int maxLateral)
+  _CoverMasks(GridField field, int green, int maxLateral, GreenZoneShape shape)
     : _cols = field.cols,
       _widths = maxLateral + 1,
       _words = ((field.mines.length + 31) ~/ 32).clamp(1, 1 << 30) {
@@ -297,7 +290,8 @@ class _CoverMasks {
       final from = math.max(0, row - green);
       final to = math.min(field.rows - 1, row + green);
       for (var other = from; other <= to; other++) {
-        final reach = other == row ? green : 0;
+        final reach = zoneReach(green, row - other, shape);
+        if (reach < 0) continue;
         for (final (mx, i) in byRow[other]) {
           window.add((mx, i, reach));
         }
@@ -387,7 +381,7 @@ class _CoverMasks {
     return (null, missedCap);
   }
 
-  final masks = _CoverMasks(field, green, cfg.maxLateral);
+  final masks = _CoverMasks(field, green, cfg.maxLateral, params.shape);
   var dp = HashMap<int, List<double>>();
   final parents = List.generate(rows, (_) => HashMap<int, int>());
 

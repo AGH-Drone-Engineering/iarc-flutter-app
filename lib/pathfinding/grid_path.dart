@@ -50,13 +50,22 @@ class Cell {
 
 /// Kształt strefy zielonej wokół ścieżki.
 ///
-/// [perpendicular] -- G komórek prostopadle do każdego prostego odcinka, bez
-/// wypełniania narożników. Tak czytamy spec.txt i tego wariantu używamy.
+/// [manhattan] -- komórka wchodzi do strefy, gdy `|dx| + |dy| <= G` od
+/// *którejkolwiek* komórki ścieżki, czyli romb. To zachowanie symulatora,
+/// sprawdzone znak po znaku na dwóch jego zrzutach (`try.txt`, `sevenwide.txt`;
+/// testy w `minefield_path/tests/test_zone_shape.py`).
 ///
-/// [square] -- dylatacja Czebyszewa, czyli dodatkowo narożniki. Zawyża B, więc
-/// jest wariantem ostrożnym. Trzymamy go, bo spec.txt nie rozstrzyga kształtu
-/// na zakrętach i symulator może liczyć właśnie tak.
+/// Odległość euklidesowa daje to samo dla G <= 2 i długo wyglądała na właściwą,
+/// ale przy G=6 się rozjeżdża: zrzut ma prostą krawędź pod 45 stopni, a koło
+/// dałoby łuk.
+///
+/// [perpendicular] -- G komórek prostopadle do każdego prostego odcinka, bez
+/// wypełniania narożników. Pierwsze odczytanie spec.txt, obalone przez zrzut.
+///
+/// [square] -- dylatacja Czebyszewa. Zawyża B, bo bierze narożniki, których
+/// symulator nie liczy.
 enum GreenZoneShape {
+  manhattan('manhattan'),
   perpendicular('perpendicular'),
   square('square');
 
@@ -329,12 +338,21 @@ List<(Cell, Cell)> pathRuns(List<Cell> cells) {
 Set<Cell> greenZoneCells(
   List<Cell> cells,
   int green, {
-  GreenZoneShape shape = GreenZoneShape.perpendicular,
+  GreenZoneShape shape = GreenZoneShape.manhattan,
 }) {
   if (green <= 0 || cells.isEmpty) return <Cell>{};
 
   final zone = <Cell>{};
-  if (shape == GreenZoneShape.square) {
+  if (shape == GreenZoneShape.manhattan) {
+    for (final cell in cells) {
+      for (var dy = -green; dy <= green; dy++) {
+        final reach = green - dy.abs();
+        for (var dx = -reach; dx <= reach; dx++) {
+          zone.add(Cell(cell.x + dx, cell.y + dy));
+        }
+      }
+    }
+  } else if (shape == GreenZoneShape.square) {
     for (final cell in cells) {
       for (var dx = -green; dx <= green; dx++) {
         for (var dy = -green; dy <= green; dy++) {
@@ -362,6 +380,22 @@ Set<Cell> greenZoneCells(
 
   zone.removeAll(cells);
   return zone;
+}
+
+/// Zasięg strefy w bok, w wierszu oddalonym o [dy] od komórki ścieżki.
+///
+/// Zwraca -1, gdy w tym wierszu strefa nie sięga wcale. Dzięki temu pokrycie
+/// miny sprowadza się do przecięcia dwóch przedziałów, niezależnie od kształtu.
+int zoneReach(int green, int dy, GreenZoneShape shape) {
+  if (dy.abs() > green) return -1;
+  switch (shape) {
+    case GreenZoneShape.square:
+      return green;
+    case GreenZoneShape.perpendicular:
+      return dy == 0 ? green : 0;
+    case GreenZoneShape.manhattan:
+      return green - dy.abs();
+  }
 }
 
 /// Czy prosty odcinek `a..b` ścieżki wciąga minę do strefy zielonej.
@@ -405,12 +439,26 @@ int missedMineCount(
   GridField field,
   List<Cell> cells,
   int green, {
-  GreenZoneShape shape = GreenZoneShape.perpendicular,
+  GreenZoneShape shape = GreenZoneShape.manhattan,
 }) {
   if (green <= 0 || cells.isEmpty || field.mines.isEmpty) return 0;
   final onPath = cells.toSet();
-  final runs = pathRuns(cells);
   var missed = 0;
+
+  if (shape == GreenZoneShape.manhattan) {
+    for (final mine in field.mines) {
+      if (onPath.contains(mine)) continue;
+      for (final cell in cells) {
+        if ((cell.x - mine.x).abs() + (cell.y - mine.y).abs() <= green) {
+          missed++;
+          break;
+        }
+      }
+    }
+    return missed;
+  }
+
+  final runs = pathRuns(cells);
   for (final mine in field.mines) {
     if (onPath.contains(mine)) continue;
     for (final (a, b) in runs) {
@@ -428,7 +476,7 @@ class ScoreParams {
   const ScoreParams({
     this.scanMinutes = 0.0,
     this.overweightOz = 0.0,
-    this.shape = GreenZoneShape.perpendicular,
+    this.shape = GreenZoneShape.manhattan,
     this.mineInflation = 1,
   });
 
