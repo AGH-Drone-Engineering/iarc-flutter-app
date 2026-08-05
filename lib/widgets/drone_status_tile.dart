@@ -3,8 +3,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../models/drone.dart';
-import '../models/mission_message.dart';
 import '../services/command_tracker.dart';
+import 'drone_visuals.dart';
 
 class DroneStatusTile extends StatefulWidget {
   const DroneStatusTile({
@@ -43,18 +43,6 @@ class _DroneStatusTileState extends State<DroneStatusTile> {
     super.dispose();
   }
 
-  Color _stateColor(ColorScheme scheme) {
-    final d = widget.drone;
-    if (widget.failure?.isCritical ?? false) return scheme.error;
-    if (!d.hasEverReported) return scheme.outline;
-    if (d.isStale) return scheme.error;
-    return switch (d.state) {
-      DroneState.killed || DroneState.error => scheme.error,
-      DroneState.idle || DroneState.landed || DroneState.boot => scheme.outline,
-      _ => Colors.green,
-    };
-  }
-
   String get _lastSeenText {
     final since = widget.drone.sinceLastSeen;
     if (since == null) return 'never seen';
@@ -78,7 +66,7 @@ class _DroneStatusTileState extends State<DroneStatusTile> {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final d = widget.drone;
-    final stateColor = _stateColor(scheme);
+    final stateColor = droneStateColor(d, scheme, failure: widget.failure);
 
     return Material(
       color: widget.selected

@@ -12,7 +12,12 @@ import 'package:provider/provider.dart';
 
 import '../models/drone.dart';
 import '../state/app_state.dart';
+import '../state/map_settings.dart';
+import '../state/path_state.dart';
+import '../widgets/drone_visuals.dart';
+import '../widgets/grid_overlay_layer.dart';
 import '../widgets/ground_dots_layer.dart';
+import '../widgets/map_settings_sheet.dart';
 
 class MapTab extends StatefulWidget {
   const MapTab({super.key});
@@ -55,7 +60,7 @@ class _MapTabState extends State<MapTab> {
       if (h != null && h.isFinite) {
         _headingDeg = h;
 
-        final rotate = context.read<AppState>().rotateWithCompass;
+        final rotate = context.read<MapSettings>().rotateWithCompass;
         if (rotate) _rotateMapToHeading(h);
         setState(() {});
       }
@@ -79,8 +84,9 @@ class _MapTabState extends State<MapTab> {
       final next = LatLng(pos.latitude, pos.longitude);
 
       setState(() => _user = next);
+      context.read<AppState>().userLocation = next;
 
-      if (!_isUserPanning) {
+      if (context.read<MapSettings>().snapToUser && !_isUserPanning) {
         _mapController.move(next, _zoom);
       }
 
@@ -101,7 +107,7 @@ class _MapTabState extends State<MapTab> {
         _isUserPanning = true;
       } else if (evt is MapEventMoveEnd) {
         _isUserPanning = false;
-        if (_user != null) {
+        if (_user != null && context.read<MapSettings>().snapToUser) {
           _mapController.move(_user!, _zoom);
         }
       }
@@ -151,8 +157,15 @@ class _MapTabState extends State<MapTab> {
   @override
   Widget build(BuildContext context) {
     final app = context.watch<AppState>();
+    final settings = context.watch<MapSettings>();
 
-    final rotatePref = app.rotateWithCompass;
+    // Wynik z zakładki Ścieżka, jeśli został policzony. Mapa go tylko pokazuje
+    // -- liczenie zostaje tam, gdzie jest przycisk.
+    final pathState = context.watch<PathState>();
+    final plan = pathState.mapped;
+    final pathScore = pathState.score;
+
+    final rotatePref = settings.rotateWithCompass;
     if (_lastRotatePref != rotatePref) {
       if (!rotatePref && _mapRotationDeg.abs() > 0.5) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -202,15 +215,59 @@ class _MapTabState extends State<MapTab> {
 
             if (polygon.isNotEmpty) PolygonLayer(polygons: polygon),
 
-            for (final d in drones)
-              GroundDotsLayer(
-                points: d.track,
-                diameterMeters: 1.0,
-                color: d.color,
-                minPixelDiameter: 3.0,
+            if (settings.isVisible(MapLayer.scanRects) && app.scans.isNotEmpty)
+              PolygonLayer(
+                polygons: [
+                  for (final scan in app.scans)
+                    Polygon(
+                      points: scan.corners,
+                      borderColor: Colors.tealAccent,
+                      borderStrokeWidth: 1,
+                      color: Colors.transparent,
+                    ),
+                ],
               ),
 
-            if (app.mines.isNotEmpty)
+            if (plan != null &&
+                (settings.isVisible(MapLayer.path) ||
+                    settings.isVisible(MapLayer.coverage)))
+              GridOverlayLayer(
+                mapping: plan.mapping,
+                field: plan.field,
+                pathCells: settings.isVisible(MapLayer.path)
+                    ? (pathScore?.pathCells ?? const [])
+                    : const [],
+                zoneCells: settings.isVisible(MapLayer.path)
+                    ? (pathScore?.zoneCells ?? const {})
+                    : const {},
+                coverage: plan.coverage,
+                showSafeCells: false,
+                showCoverage: settings.isVisible(MapLayer.coverage),
+              ),
+
+            if (plan != null &&
+                settings.isVisible(MapLayer.path) &&
+                (pathScore?.pathCells.isNotEmpty ?? false))
+              PolylineLayer(
+                polylines: [
+                  Polyline(
+                    points: plan.mapping.pathLatLng(pathScore!.pathCells),
+                    color: Colors.white,
+                    strokeWidth: 2,
+                  ),
+                ],
+              ),
+
+            if (settings.isVisible(MapLayer.droneTracks))
+              for (final d in drones)
+                GroundDotsLayer(
+                  points: d.track,
+                  diameterMeters: 1.0,
+                  color: d.color,
+                  minPixelDiameter: 3.0,
+                ),
+
+            if (settings.isVisible(MapLayer.mines) && app.mines.isNotEmpty)
               GroundDotsLayer(
                 points: [for (final m in app.mines) m.position],
                 diameterMeters: 1.0,
@@ -219,35 +276,36 @@ class _MapTabState extends State<MapTab> {
                 innerColor: Colors.purpleAccent,
               ),
 
-            MarkerLayer(
-              markers: [
-                for (final d in drones)
-                  if (d.position != null)
-                    Marker(
-                      point: d.position!,
-                      width: 26,
-                      height: 26,
-                      child: Container(
-                        decoration: BoxDecoration(
-                          color: d.color,
-                          shape: BoxShape.circle,
-                          border: Border.all(color: Colors.black87, width: 2),
-                        ),
-                        child: Center(
-                          child: Text(
-                            '${d.id}',
-                            style: const TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.bold,
-                              color: Colors.black87,
+            if (settings.isVisible(MapLayer.drones))
+              MarkerLayer(
+                markers: [
+                  for (final d in drones)
+                    if (d.position != null)
+                      Marker(
+                        point: d.position!,
+                        width: 26,
+                        height: 26,
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: d.color,
+                            shape: BoxShape.circle,
+                            border: Border.all(color: Colors.black87, width: 2),
+                          ),
+                          child: Center(
+                            child: Text(
+                              '${d.id}',
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                                color: readableOn(d.color),
+                              ),
                             ),
                           ),
                         ),
                       ),
-                    ),
-              ],
-            ),
-            if (_user != null)
+                ],
+              ),
+            if (_user != null && settings.isVisible(MapLayer.user))
               CircleLayer(
                 circles: [
                   CircleMarker(
@@ -285,6 +343,16 @@ class _MapTabState extends State<MapTab> {
                 ),
               ],
             ),
+          ),
+        ),
+
+        Positioned(
+          right: 16,
+          bottom: 16,
+          child: FloatingActionButton(
+            onPressed: () => showMapSettingsSheet(context),
+            tooltip: 'Ustawienia mapy',
+            child: const Icon(Icons.tune),
           ),
         ),
       ],

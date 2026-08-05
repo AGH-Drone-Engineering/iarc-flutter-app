@@ -106,15 +106,6 @@ class _InputsTabState extends State<InputsTab> {
         children: [
           Card(
             margin: EdgeInsets.zero,
-            child: SwitchListTile.adaptive(
-              title: const Text('Rotate map with compass'),
-              value: app.rotateWithCompass,
-              onChanged: app.setRotateWithCompass,
-            ),
-          ),
-          const SizedBox(height: 16),
-          Card(
-            margin: EdgeInsets.zero,
             child: Padding(
               padding: const EdgeInsets.all(16),
               child: Column(

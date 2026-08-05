@@ -186,6 +186,11 @@ sealed class MissionMessage {
         ),
       'EVT' =>
         EventMessage(seq: seq, event: MissionEvent.fromWire(_string(parsed, 'ev'))),
+      'SCAN' => ScanMessage(
+          seq: seq,
+          cornerA: _latLonPair(parsed, 'a'),
+          cornerB: _latLonPair(parsed, 'b'),
+        ),
       'START_DEMO' => StartDemoMessage(seq: seq, altitude: _double(parsed, 'alt')),
       'START_MAIN' => StartMainMessage(
           seq: seq,
@@ -400,6 +405,31 @@ class EventMessage extends MissionMessage {
   Map<String, Object?> get fields => {'ev': event.wire};
 }
 
+/// Prostokątny obszar uznany przez drona za przeskanowany.
+///
+/// Bez tego komunikatu stacja naziemna nie odróżnia „nie ma tu miny" od „nikt
+/// tu nie patrzył". Dla wyznaczania ścieżki to różnica zasadnicza: teren
+/// nieprzeskanowany jest traktowany jak zaminowany, bo nic o nim nie wiemy.
+///
+/// Prostokąt jest osiowany w lat/lon i zadany dwoma przeciwległymi
+/// narożnikami; kolejność narożników nie ma znaczenia.
+class ScanMessage extends MissionMessage {
+  final LatLng cornerA;
+  final LatLng cornerB;
+  const ScanMessage({
+    required super.seq,
+    required this.cornerA,
+    required this.cornerB,
+  });
+  @override
+  String get type => 'SCAN';
+  @override
+  Map<String, Object?> get fields => {
+        'a': [_round(cornerA.latitude, 7), _round(cornerA.longitude, 7)],
+        'b': [_round(cornerB.latitude, 7), _round(cornerB.longitude, 7)],
+      };
+}
+
 class _Decimal {
   final String text;
   const _Decimal(this.text);
@@ -493,6 +523,14 @@ List<LatLng> _corners(Map<String, Object?> json) {
       else
         throw const MissionMessageException('Corner is not a [lat,lon] pair'),
   ];
+}
+
+LatLng _latLonPair(Map<String, Object?> json, String key) {
+  final v = _require(json, key);
+  if (v is! List || v.length < 2 || v[0] is! num || v[1] is! num) {
+    throw MissionMessageException('Field "$key" must be a [lat,lon] pair');
+  }
+  return LatLng((v[0] as num).toDouble(), (v[1] as num).toDouble());
 }
 
 class SeqCounter {

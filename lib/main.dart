@@ -6,8 +6,11 @@ import 'package:flutter_map_tile_caching/flutter_map_tile_caching.dart' as fmtc;
 import 'models/drone.dart';
 import 'services/global_log.dart';
 import 'state/app_state.dart';
+import 'state/map_settings.dart';
+import 'state/path_state.dart';
 import 'screens/map_tab.dart';
 import 'screens/logs_tab.dart';
+import 'screens/path_tab.dart';
 import 'screens/esp_data_tab.dart';
 import 'screens/inputs_tab.dart';
 import 'screens/mission_tab.dart';
@@ -25,20 +28,26 @@ Future<void> main() async {
   final appState = AppState();
   await appState.init();
 
-  runApp(MyApp(appState: appState));
+  final mapSettings = MapSettings();
+  await mapSettings.init();
+
+  runApp(MyApp(appState: appState, mapSettings: mapSettings));
 }
 
 class MyApp extends StatelessWidget {
-  const MyApp({super.key, required this.appState});
+  const MyApp({super.key, required this.appState, required this.mapSettings});
 
   final AppState appState;
+  final MapSettings mapSettings;
 
   @override
   Widget build(BuildContext context) {
     return MultiProvider(
       providers: [
         ChangeNotifierProvider<AppState>.value(value: appState),
+        ChangeNotifierProvider<MapSettings>.value(value: mapSettings),
         ChangeNotifierProvider<GlobalLog>.value(value: globalLog),
+        ChangeNotifierProvider<PathState>(create: (_) => PathState(appState)),
       ],
       child: MaterialApp(
         title: 'IARC 2026',
@@ -70,6 +79,7 @@ class _HomeTabsState extends State<HomeTabs> {
     InputsTab(),
     LogsTab(),
     EspDataTab(),
+    PathTab(),
   ];
 
   static const _destinations = <NavigationDestination>[
@@ -82,6 +92,7 @@ class _HomeTabsState extends State<HomeTabs> {
     NavigationDestination(icon: Icon(Icons.edit_location_alt), label: 'Field'),
     NavigationDestination(icon: Icon(Icons.list_alt), label: 'Logs'),
     NavigationDestination(icon: Icon(Icons.usb), label: 'Link'),
+    NavigationDestination(icon: Icon(Icons.route), label: 'Path'),
   ];
 
   @override

@@ -3,18 +3,33 @@ import 'package:latlong2/latlong.dart';
 
 import 'mission_message.dart';
 
+/// Jedna wykryta mina.
+///
+/// [id] jest nasze i zawsze różne. [tag] to numer z kodu Aruco i pełni rolę
+/// nazwy, a nie tożsamości: ten sam znacznik może zostać naklejony na dwie miny
+/// albo odczytany błędnie, więc dwa zgłoszenia z tym samym [tag] w różnych
+/// miejscach to dwie miny, nie jedna. Odwrotnie też: dwa różne [tag] w tym
+/// samym miejscu to dwie miny.
 class MineReport {
-  final int tag;
-  final LatLng position;
-  final int reportedBy;
-  final DateTime at;
-
   MineReport({
+    required this.id,
     required this.tag,
     required this.position,
     required this.reportedBy,
     required this.at,
   });
+
+  /// Wewnętrzny identyfikator, unikalny w obrębie sesji.
+  final int id;
+
+  /// Numer z kodu Aruco -- nazwa pokazywana operatorowi.
+  final int tag;
+
+  final LatLng position;
+  final int reportedBy;
+  final DateTime at;
+
+  String get name => 'Mina $tag';
 }
 
 class Drone {

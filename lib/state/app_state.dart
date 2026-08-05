@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/drone.dart';
 import '../models/link_config.dart';
 import '../models/mission_message.dart';
+import '../pathfinding/field_grid.dart' show ScanRegion;
 import '../services/command_tracker.dart';
 import '../services/demo_runner.dart';
 import '../services/global_log.dart';
@@ -44,7 +45,6 @@ class AppState extends ChangeNotifier {
 
   static const _kLinkKey = 'link_config_v1';
   static const _kCornersKey = 'corners_v1';
-  static const _kRotateWithCompassKey = 'rotate_with_compass_v1';
   static const _kDemoAltKey = 'demo_alt_v1';
   static const _kMainAltKey = 'main_alt_v1';
   static const _kStepKey = 'demo_step_v1';
@@ -56,7 +56,12 @@ class AppState extends ChangeNotifier {
   final List<LatLng?> corners = List<LatLng?>.filled(4, null, growable: false);
   final List<MineReport> mines = [];
 
-  bool rotateWithCompass = true;
+  /// Prostokąty zgłoszone przez drony jako przeskanowane.
+  ///
+  /// Kumulują się i mogą się nakładać -- dron nie musi pamiętać, co już
+  /// wysłał. Bez nich pole jest w całości nieznane, a więc nieprzejezdne.
+  final List<ScanRegion> scans = [];
+
   double demoAltitude = 3.0;
   double mainAltitude = 8.0;
   double stepDistance = 3.0;
@@ -157,6 +162,17 @@ class AppState extends ChangeNotifier {
             'pos=${t.position.latitude},${t.position.longitude}');
       case MineMessage m:
         _recordMine(incoming.from, m);
+      case ScanMessage s:
+        scans.add(ScanRegion(s.cornerA, s.cornerB));
+        logInfo(
+          'Scan region from ${Drone.nameFor(incoming.from)}: '
+          '${s.cornerA.latitude.toStringAsFixed(7)},'
+          '${s.cornerA.longitude.toStringAsFixed(7)} .. '
+          '${s.cornerB.latitude.toStringAsFixed(7)},'
+          '${s.cornerB.longitude.toStringAsFixed(7)} '
+          '(${scans.length} łącznie)',
+          _tag,
+        );
       case EventMessage e:
         drone?.lastEvent = e.event;
         demo.handleEvent(incoming.from, e.event);
@@ -169,17 +185,46 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Dwa zgłoszenia to ta sama mina tylko przy zgodnym znaczniku *i* pozycji.
+  ///
+  /// Próg jest rzędu błędu GPS. Powyżej niego ten sam znacznik w dwóch
+  /// miejscach oznacza dwie miny -- albo ten sam kod naklejono dwa razy, albo
+  /// odczyt był błędny. W obu przypadkach zgubienie jednej z nich jest gorsze
+  /// niż pokazanie obu. Odwrotny przypadek, dwa różne znaczniki w tym samym
+  /// miejscu, też daje dwie miny -- tu nie ma żadnego scalania.
+  static const double _mineDedupeMeters = 3.0;
+  static const Distance _distance = Distance();
+
+  int _nextMineId = 1;
+
   void _recordMine(int from, MineMessage m) {
-    if (mines.any((e) => e.tag == m.tag)) return;
-    mines.add(MineReport(
+    final duplicate = mines.any(
+      (e) =>
+          e.tag == m.tag &&
+          _distance.as(LengthUnit.Meter, e.position, m.position) <=
+              _mineDedupeMeters,
+    );
+    if (duplicate) return;
+
+    final report = MineReport(
+      id: _nextMineId++,
       tag: m.tag,
       position: m.position,
       reportedBy: from,
       at: DateTime.now(),
-    ));
-    logInfo('Mine ${m.tag} reported by ${Drone.nameFor(from)} at '
-        '${m.position.latitude.toStringAsFixed(7)}, '
-        '${m.position.longitude.toStringAsFixed(7)}', _tag);
+    );
+    mines.add(report);
+
+    final sameTag = mines.where((e) => e.tag == m.tag).length;
+    final suffix = sameTag > 1
+        ? ' (znacznik ${m.tag} widziany już w $sameTag miejscach)'
+        : '';
+    logInfo(
+      'Mine ${m.tag} [#${report.id}] reported by ${Drone.nameFor(from)} at '
+      '${m.position.latitude.toStringAsFixed(7)}, '
+      '${m.position.longitude.toStringAsFixed(7)}$suffix',
+      _tag,
+    );
   }
 
   Future<void> startDemo({int? target}) {
@@ -249,17 +294,10 @@ class AppState extends ChangeNotifier {
 
   Future<void> _loadSettings() async {
     final p = await _ensurePrefs();
-    rotateWithCompass = p.getBool(_kRotateWithCompassKey) ?? true;
     demoAltitude = p.getDouble(_kDemoAltKey) ?? 3.0;
     mainAltitude = p.getDouble(_kMainAltKey) ?? 8.0;
     stepDistance = p.getDouble(_kStepKey) ?? 3.0;
     notifyListeners();
-  }
-
-  Future<void> setRotateWithCompass(bool v) async {
-    rotateWithCompass = v;
-    notifyListeners();
-    (await _ensurePrefs()).setBool(_kRotateWithCompassKey, v);
   }
 
   Future<void> setDemoAltitude(double v) async {

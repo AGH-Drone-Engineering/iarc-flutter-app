@@ -5,10 +5,14 @@ import '../models/drone.dart';
 import '../models/mission_message.dart';
 import '../services/demo_runner.dart';
 import '../state/app_state.dart';
-import '../widgets/ack_alert_banner.dart';
-import '../widgets/drone_status_tile.dart';
+import '../widgets/connection_bar.dart';
+import '../widgets/drone_visuals.dart';
 import '../widgets/hold_to_confirm_button.dart';
+import '../widgets/mine_identity.dart';
+import '../widgets/number_stepper.dart';
+import '../widgets/section_card.dart';
 import '../widgets/voice_control.dart';
+import 'status_screen.dart';
 
 class MissionTab extends StatelessWidget {
   const MissionTab({super.key});
@@ -21,32 +25,19 @@ class MissionTab extends StatelessWidget {
       child: ListView(
         padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
         children: [
-          if (app.tracker.failures.isNotEmpty) ...[
-            AckAlertBanner(
-              failures: app.tracker.failures,
-              onDismiss: app.tracker.dismissFailure,
-              onRetryStatus: (id) => app.requestStatus(target: id),
-            ),
-            const SizedBox(height: 16),
-          ],
-          const _ConnectionBar(),
+          const ConnectionBar(),
+          if (app.tracker.failures.isNotEmpty) const _LatestFailureLine(),
           const SizedBox(height: 12),
           const VoiceControl(),
           const SizedBox(height: 16),
-          const _TargetSelector(),
+          const _FleetSection(),
           const SizedBox(height: 20),
           const _MissionStartSection(),
           const SizedBox(height: 20),
-          const _DemoSequenceSection(),
-          const SizedBox(height: 20),
-          const _DemoControlSection(),
-          const SizedBox(height: 20),
           const _RecoverySection(),
-          const SizedBox(height: 24),
-          const _FleetStatusSection(),
           if (app.mines.isNotEmpty) ...[
-            const SizedBox(height: 24),
-            const _MineList(),
+            const SizedBox(height: 20),
+            const _MineStrip(),
           ],
         ],
       ),
@@ -54,32 +45,42 @@ class MissionTab extends StatelessWidget {
   }
 }
 
-class _SectionCard extends StatelessWidget {
-  const _SectionCard({required this.title, required this.child, this.trailing});
-
-  final String title;
-  final Widget child;
-  final Widget? trailing;
+/// The newest ACK failure as a single line. The full history lives in the Logs
+/// tab, the full detail and the retry controls on the status screen.
+class _LatestFailureLine extends StatelessWidget {
+  const _LatestFailureLine();
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      margin: EdgeInsets.zero,
+    final failures = context.watch<AppState>().tracker.failures;
+    if (failures.isEmpty) return const SizedBox.shrink();
+
+    final scheme = Theme.of(context).colorScheme;
+    final latest = failures.first;
+    final older = failures.length - 1;
+    final style = Theme.of(context)
+        .textTheme
+        .bodySmall
+        ?.copyWith(color: scheme.error);
+
+    return InkWell(
+      onTap: () => StatusScreen.open(context),
       child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
+        padding: const EdgeInsets.fromLTRB(4, 8, 4, 0),
+        child: Row(
           children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Text(title, style: Theme.of(context).textTheme.titleMedium),
-                ),
-                ?trailing,
-              ],
+            Icon(Icons.error_outline, size: 16, color: scheme.error),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Text(
+                '${Drone.nameFor(latest.droneId)}: ${latest.description}',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: style,
+              ),
             ),
-            const SizedBox(height: 12),
-            child,
+            if (older > 0) Text(' +$older', style: style),
+            Icon(Icons.chevron_right, size: 16, color: scheme.error),
           ],
         ),
       ),
@@ -87,77 +88,200 @@ class _SectionCard extends StatelessWidget {
   }
 }
 
-class _ConnectionBar extends StatelessWidget {
-  const _ConnectionBar();
+/// Doubles as the command target selector: the tile you pick is the drone
+/// every button on this screen addresses.
+class _FleetSection extends StatelessWidget {
+  const _FleetSection();
 
   @override
   Widget build(BuildContext context) {
     final app = context.watch<AppState>();
-    final connected = app.isConnected;
-    final scheme = Theme.of(context).colorScheme;
+    final drones = app.drones;
 
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-      decoration: BoxDecoration(
-        color: connected
-            ? scheme.primaryContainer
-            : scheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(12),
+    return SectionCard(
+      title: 'Fleet',
+      trailing: TextButton.icon(
+        onPressed: () => StatusScreen.open(context),
+        icon: const Icon(Icons.open_in_new, size: 16),
+        label: const Text('Status'),
       ),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Icon(
-            connected ? Icons.usb : Icons.usb_off,
-            size: 20,
-            color: connected ? scheme.onPrimaryContainer : scheme.onSurfaceVariant,
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Text(
-              app.connectionStatus,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                color:
-                    connected ? scheme.onPrimaryContainer : scheme.onSurfaceVariant,
-              ),
+          _TargetTile(
+            selected: app.selectedTarget == kBroadcastAddress,
+            onTap: () => app.setSelectedTarget(kBroadcastAddress),
+            child: Row(
+              children: [
+                const Icon(Icons.groups, size: 18),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    Drone.nameFor(kBroadcastAddress),
+                    style: const TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                ),
+                Text(
+                  'broadcast',
+                  style: Theme.of(context).textTheme.labelSmall,
+                ),
+              ],
             ),
           ),
-          Text(
-            app.config.transport.label,
-            style: Theme.of(context).textTheme.labelSmall,
-          ),
+          const SizedBox(height: 8),
+          for (var i = 0; i < drones.length; i += 2)
+            Padding(
+              padding: EdgeInsets.only(bottom: i + 2 < drones.length ? 8 : 0),
+              child: IntrinsicHeight(
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Expanded(child: _FleetCell(drone: drones[i])),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: i + 1 < drones.length
+                          ? _FleetCell(drone: drones[i + 1])
+                          : const SizedBox.shrink(),
+                    ),
+                  ],
+                ),
+              ),
+            ),
         ],
       ),
     );
   }
 }
 
-class _TargetSelector extends StatelessWidget {
-  const _TargetSelector();
+class _TargetTile extends StatelessWidget {
+  const _TargetTile({
+    required this.selected,
+    required this.onTap,
+    required this.child,
+  });
+
+  final bool selected;
+  final VoidCallback onTap;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+
+    return Material(
+      color: selected
+          ? scheme.secondaryContainer
+          : scheme.surfaceContainerHighest.withValues(alpha: 0.5),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(
+          color: selected ? scheme.primary : Colors.transparent,
+        ),
+      ),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(12),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+          child: child,
+        ),
+      ),
+    );
+  }
+}
+
+class _FleetCell extends StatelessWidget {
+  const _FleetCell({required this.drone});
+
+  final Drone drone;
 
   @override
   Widget build(BuildContext context) {
     final app = context.watch<AppState>();
+    final scheme = Theme.of(context).colorScheme;
+    final text = Theme.of(context).textTheme;
+    final stateColor = droneStateColor(
+      drone,
+      scheme,
+      failure: app.tracker.failureFor(drone.id),
+    );
+    final progress = app.demo.progressFor(drone.id);
 
-    return _SectionCard(
-      title: 'Target',
-      child: Wrap(
-        spacing: 8,
-        runSpacing: 8,
+    return _TargetTile(
+      selected: app.selectedTarget == drone.id,
+      onTap: () => app.setSelectedTarget(drone.id),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
         children: [
-          ChoiceChip(
-            label: const Text('All drones'),
-            avatar: const Icon(Icons.groups, size: 18),
-            selected: app.selectedTarget == kBroadcastAddress,
-            onSelected: (_) => app.setSelectedTarget(kBroadcastAddress),
+          Row(
+            children: [
+              DroneBadge(color: drone.color, radius: 5),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  drone.name,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontWeight: FontWeight.w600),
+                ),
+              ),
+              if (app.tracker.isAwaitingAck(drone.id))
+                SizedBox(
+                  width: 10,
+                  height: 10,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 1.5,
+                    color: scheme.primary,
+                  ),
+                ),
+            ],
           ),
-          for (final d in app.drones)
-            ChoiceChip(
-              label: Text(d.name),
-              avatar: CircleAvatar(backgroundColor: d.color, radius: 8),
-              selected: app.selectedTarget == d.id,
-              onSelected: (_) => app.setSelectedTarget(d.id),
+          const SizedBox(height: 2),
+          Row(
+            children: [
+              Flexible(
+                child: Text(
+                  drone.hasEverReported ? drone.state.wire : 'no telemetry',
+                  overflow: TextOverflow.ellipsis,
+                  style: text.labelSmall
+                      ?.copyWith(color: stateColor, fontWeight: FontWeight.w700),
+                ),
+              ),
+              if (drone.battery != null) ...[
+                const SizedBox(width: 6),
+                Text(
+                  '${drone.battery!.toStringAsFixed(1)} V',
+                  style: text.labelSmall?.copyWith(
+                    fontFeatures: const [FontFeature.tabularFigures()],
+                  ),
+                ),
+              ],
+            ],
+          ),
+          if (progress != null) ...[
+            const SizedBox(height: 2),
+            Row(
+              children: [
+                Icon(
+                  demoPhaseIcon(progress.phase),
+                  size: 12,
+                  color: demoPhaseColor(progress.phase, scheme),
+                ),
+                const SizedBox(width: 4),
+                Flexible(
+                  child: Text(
+                    progress.phase == DemoPhase.stepping
+                        ? 'step ${progress.steps}'
+                        : demoPhaseLabel(progress.phase),
+                    overflow: TextOverflow.ellipsis,
+                    style: text.labelSmall?.copyWith(
+                      color: demoPhaseColor(progress.phase, scheme),
+                    ),
+                  ),
+                ),
+              ],
             ),
+          ],
         ],
       ),
     );
@@ -173,12 +297,12 @@ class _MissionStartSection extends StatelessWidget {
     final enabled = app.isConnected;
     final cornerCount = app.filledCorners.length;
 
-    return _SectionCard(
+    return SectionCard(
       title: 'Start mission',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _NumberStepper(
+          NumberStepper(
             label: 'Demo hover altitude',
             value: app.demoAltitude,
             min: 0.5,
@@ -207,10 +331,16 @@ class _MissionStartSection extends StatelessWidget {
                 minimumSize: const Size.fromHeight(48),
               ),
             ),
+          const SizedBox(height: 8),
+          Text(
+            'The drones hold the choreography — each step is advanced '
+            'automatically once the last one is acknowledged.',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
           const SizedBox(height: 20),
           const Divider(height: 1),
           const SizedBox(height: 16),
-          _NumberStepper(
+          NumberStepper(
             label: 'Main search altitude',
             value: app.mainAltitude,
             min: 1.0,
@@ -264,173 +394,6 @@ class _MissionStartSection extends StatelessWidget {
   }
 }
 
-class _DemoSequenceSection extends StatelessWidget {
-  const _DemoSequenceSection();
-
-  static const _icons = <DemoPhase, IconData>{
-    DemoPhase.starting: Icons.flight_takeoff,
-    DemoPhase.stepping: Icons.directions_run,
-    DemoPhase.returning: Icons.home,
-    DemoPhase.finished: Icons.check_circle,
-    DemoPhase.stopped: Icons.pause_circle,
-  };
-
-  static const _labels = <DemoPhase, String>{
-    DemoPhase.starting: 'taking off',
-    DemoPhase.stepping: 'running',
-    DemoPhase.returning: 'returning home',
-    DemoPhase.finished: 'finished',
-    DemoPhase.stopped: 'stopped',
-  };
-
-  Color _color(DemoPhase phase, ColorScheme scheme) => switch (phase) {
-        DemoPhase.returning => scheme.error,
-        DemoPhase.finished => Colors.green,
-        DemoPhase.stopped => scheme.outline,
-        _ => scheme.primary,
-      };
-
-  @override
-  Widget build(BuildContext context) {
-    final app = context.watch<AppState>();
-    final entries = app.demo.progress.values.toList()
-      ..sort((a, b) => a.droneId.compareTo(b.droneId));
-
-    if (entries.isEmpty) return const SizedBox.shrink();
-
-    final scheme = Theme.of(context).colorScheme;
-
-    return _SectionCard(
-      title: 'Demo sequence',
-      trailing: app.demo.isRunning
-          ? const SizedBox(
-              width: 14,
-              height: 14,
-              child: CircularProgressIndicator(strokeWidth: 2),
-            )
-          : TextButton(
-              onPressed: app.demo.clear,
-              child: const Text('Clear'),
-            ),
-      child: Column(
-        children: [
-          for (final p in entries)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 6),
-              child: Row(
-                children: [
-                  Icon(_icons[p.phase], size: 18, color: _color(p.phase, scheme)),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          Drone.nameFor(p.droneId),
-                          style: const TextStyle(fontWeight: FontWeight.w600),
-                        ),
-                        Text(
-                          p.detail ?? _labels[p.phase]!,
-                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                                color: _color(p.phase, scheme),
-                              ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  Text(
-                    'step ${p.steps}',
-                    style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                          fontFeatures: const [FontFeature.tabularFigures()],
-                        ),
-                  ),
-                ],
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-}
-
-class _DemoControlSection extends StatelessWidget {
-  const _DemoControlSection();
-
-  static const _layout = <List<MoveDirection?>>[
-    [MoveDirection.forwardLeft, MoveDirection.forward, MoveDirection.forwardRight],
-    [MoveDirection.left, null, MoveDirection.right],
-    [MoveDirection.backLeft, MoveDirection.back, MoveDirection.backRight],
-  ];
-
-  static const _icons = <MoveDirection, IconData>{
-    MoveDirection.forward: Icons.arrow_upward,
-    MoveDirection.back: Icons.arrow_downward,
-    MoveDirection.left: Icons.arrow_back,
-    MoveDirection.right: Icons.arrow_forward,
-    MoveDirection.forwardLeft: Icons.north_west,
-    MoveDirection.forwardRight: Icons.north_east,
-    MoveDirection.backLeft: Icons.south_west,
-    MoveDirection.backRight: Icons.south_east,
-  };
-
-  @override
-  Widget build(BuildContext context) {
-    final app = context.watch<AppState>();
-    final enabled = app.isConnected;
-
-    return _SectionCard(
-      title: 'Manual movement',
-      trailing: Text(
-        'body frame',
-        style: Theme.of(context).textTheme.labelSmall,
-      ),
-      child: Column(
-        children: [
-          _NumberStepper(
-            label: 'Step distance',
-            value: app.stepDistance,
-            min: 0.5,
-            max: 20.0,
-            step: 0.5,
-            unit: 'm',
-            onChanged: app.setStepDistance,
-          ),
-          const SizedBox(height: 12),
-          for (final row in _layout)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 8),
-              child: Row(
-                children: [
-                  for (final dir in row)
-                    Expanded(
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 4),
-                        child: dir == null
-                            ? Center(
-                                child: Text(
-                                  '${app.stepDistance.toStringAsFixed(1)} m',
-                                  style: Theme.of(context).textTheme.labelMedium,
-                                ),
-                              )
-                            : OutlinedButton(
-                                onPressed:
-                                    enabled ? () => app.move(dir) : null,
-                                style: OutlinedButton.styleFrom(
-                                  padding: const EdgeInsets.symmetric(vertical: 18),
-                                ),
-                                child: Icon(_icons[dir]),
-                              ),
-                      ),
-                    ),
-                ],
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-}
-
 class _RecoverySection extends StatelessWidget {
   const _RecoverySection();
 
@@ -440,7 +403,7 @@ class _RecoverySection extends StatelessWidget {
     final enabled = app.isConnected;
     final scheme = Theme.of(context).colorScheme;
 
-    return _SectionCard(
+    return SectionCard(
       title: 'Recovery',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -497,117 +460,29 @@ class _RecoverySection extends StatelessWidget {
   }
 }
 
-class _FleetStatusSection extends StatelessWidget {
-  const _FleetStatusSection();
+/// One badge per mine, coloured by the drone that reported it. Coordinates are
+/// on the map, on the status screen and in the log.
+class _MineStrip extends StatelessWidget {
+  const _MineStrip();
 
   @override
   Widget build(BuildContext context) {
     final app = context.watch<AppState>();
 
-    return _SectionCard(
-      title: 'Fleet',
-      child: Column(
-        children: [
-          for (final d in app.drones)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 8),
-              child: DroneStatusTile(
-                drone: d,
-                awaitingAck: app.tracker.isAwaitingAck(d.id),
-                failure: app.tracker.failureFor(d.id),
-                onTap: () => app.setSelectedTarget(d.id),
-                selected: app.selectedTarget == d.id,
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-}
-
-class _MineList extends StatelessWidget {
-  const _MineList();
-
-  @override
-  Widget build(BuildContext context) {
-    final app = context.watch<AppState>();
-
-    return _SectionCard(
+    return SectionCard(
       title: 'Mines detected',
-      trailing: Text('${app.mines.length}',
-          style: Theme.of(context).textTheme.titleMedium),
-      child: Column(
-        children: [
-          for (final m in app.mines)
-            ListTile(
-              dense: true,
-              contentPadding: EdgeInsets.zero,
-              leading: CircleAvatar(
-                radius: 14,
-                backgroundColor: Drone.byId(m.reportedBy)?.color,
-                child: Text('${m.tag}', style: const TextStyle(fontSize: 12)),
-              ),
-              title: Text(
-                '${m.position.latitude.toStringAsFixed(7)}, '
-                '${m.position.longitude.toStringAsFixed(7)}',
-                style: const TextStyle(fontFeatures: [FontFeature.tabularFigures()]),
-              ),
-              subtitle: Text('by ${Drone.nameFor(m.reportedBy)}'),
-            ),
-        ],
+      trailing: Text(
+        '${app.mines.length}',
+        style: Theme.of(context).textTheme.titleMedium,
       ),
-    );
-  }
-}
-
-class _NumberStepper extends StatelessWidget {
-  const _NumberStepper({
-    required this.label,
-    required this.value,
-    required this.min,
-    required this.max,
-    required this.step,
-    required this.unit,
-    required this.onChanged,
-  });
-
-  final String label;
-  final double value;
-  final double min;
-  final double max;
-  final double step;
-  final String unit;
-  final ValueChanged<double> onChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Expanded(child: Text(label)),
-        IconButton(
-          onPressed: value > min
-              ? () => onChanged((value - step).clamp(min, max))
-              : null,
-          icon: const Icon(Icons.remove_circle_outline),
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: Wrap(
+          spacing: 6,
+          runSpacing: 6,
+          children: [for (final m in app.mines) MineIdentity(mine: m)],
         ),
-        SizedBox(
-          width: 64,
-          child: Text(
-            '${value.toStringAsFixed(1)} $unit',
-            textAlign: TextAlign.center,
-            style: const TextStyle(
-              fontWeight: FontWeight.w600,
-              fontFeatures: [FontFeature.tabularFigures()],
-            ),
-          ),
-        ),
-        IconButton(
-          onPressed: value < max
-              ? () => onChanged((value + step).clamp(min, max))
-              : null,
-          icon: const Icon(Icons.add_circle_outline),
-        ),
-      ],
+      ),
     );
   }
 }
