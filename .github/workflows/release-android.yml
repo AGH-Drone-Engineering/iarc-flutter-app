@@ -4,14 +4,11 @@ on:
   push:
     tags:
       - "v*"
-  # Manual trigger. Doubles as the fastest way to tell "Actions is off" apart
-  # from "the tag push did not fire": if the Run workflow button is missing,
-  # Actions is disabled for the repo or the org, not misconfigured here.
+  # Manual trigger, for when a tag push does not fire. Pick the tag itself in
+  # the "Use workflow from" selector, not a branch: the upload step below is
+  # gated on refs/tags/*, so a run started from a branch builds but publishes
+  # nothing.
   workflow_dispatch:
-    inputs:
-      ref:
-        description: "Tag to build (defaults to the selected branch)"
-        required: false
 
 permissions:
   contents: write   # required to create/update Releases
@@ -35,6 +32,27 @@ jobs:
           cache: true
 
       - run: flutter pub get
+
+      # Reconstruct the release signing key from secrets. Without this the
+      # Flutter template falls back to the debug key, and a runner generates a
+      # fresh debug key per run - so every build would be signed by a different
+      # identity and none could be installed over another.
+      - name: Restore release keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::error::ANDROID_KEYSTORE_BASE64 is not set - refusing to ship a debug-signed release"
+            exit 1
+          fi
+          echo "$KEYSTORE_BASE64" | base64 --decode > android/upload-keystore.jks
+          cat > android/key.properties <<EOF
+          storePassword=$KEYSTORE_PASSWORD
+          keyPassword=$KEYSTORE_PASSWORD
+          keyAlias=upload
+          storeFile=../upload-keystore.jks
+          EOF
 
       # Build both AAB and per-ABI APKs (armeabi-v7a + arm64-v8a only)
       - run: flutter build appbundle --release
