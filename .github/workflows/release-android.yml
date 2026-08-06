@@ -4,6 +4,14 @@ on:
   push:
     tags:
       - "v*"
+  # Manual trigger. Doubles as the fastest way to tell "Actions is off" apart
+  # from "the tag push did not fire": if the Run workflow button is missing,
+  # Actions is disabled for the repo or the org, not misconfigured here.
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Tag to build (defaults to the selected branch)"
+        required: false
 
 permissions:
   contents: write   # required to create/update Releases
