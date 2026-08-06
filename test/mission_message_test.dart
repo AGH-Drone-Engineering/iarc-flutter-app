@@ -51,35 +51,19 @@ void main() {
       expect((c.first as List)[1], 19.9);
     });
 
-    test('MOVE uses the drone-side Command enum names verbatim', () {
-      expect(
-        MoveDirection.values.map((d) => d.wire).toSet(),
-        {
-          'FORWARD',
-          'BACK',
-          'LEFT',
-          'RIGHT',
-          'FORWARD_RIGHT',
-          'BACK_RIGHT',
-          'BACK_LEFT',
-          'FORWARD_LEFT',
-        },
-      );
+    test('MOVE carries an absolute target, latitude first', () {
+      final tx = MoveMessage(seq: 3, target: LatLng(50.062975, 19.9157));
+      expect(tx.encode(), '{"v":1,"q":3,"t":"MOVE","to":[50.062975,19.9157]}');
 
-      final tx = MoveMessage(seq: 3, direction: MoveDirection.forwardLeft, distance: 3.0);
-      expect(tx.encode(), '{"v":1,"q":3,"t":"MOVE","dir":"FORWARD_LEFT","d":3.0}');
+      final rx = MissionMessage.decode(tx.encode()) as MoveMessage;
+      expect(rx.target.latitude, closeTo(50.062975, 1e-7));
+      expect(rx.target.longitude, closeTo(19.9157, 1e-7));
     });
 
-    test('KILL carries the magic guard word', () {
-      final tx = KillMessage(seq: 6);
-      expect(tx.encode(), '{"v":1,"q":6,"t":"KILL","k":"BE11DEAD"}');
-      expect(MissionMessage.decode(tx.encode()), isA<KillMessage>());
-    });
-
-    test('KILL with a wrong magic word is rejected', () {
+    test('KILL is not a protocol message — the killswitch is hardware', () {
       expect(
-        () => MissionMessage.decode('{"v":1,"q":6,"t":"KILL","k":"DEADBEEF"}'),
-        throwsA(isA<MissionMessageException>()),
+        () => MissionMessage.decode('{"v":1,"q":6,"t":"KILL","k":"BE11DEAD"}'),
+        throwsA(isA<UnsupportedMessageTypeException>()),
       );
     });
 
@@ -109,12 +93,26 @@ void main() {
     test('ACK and NACK carry the responding-to sequence', () {
       final ack = MissionMessage.decode('{"v":1,"q":40,"t":"ACK","re":7}') as AckMessage;
       expect(ack.respondingTo, 7);
+      expect(ack.position, isNull, reason: 'the beacon fields are optional');
 
       final nack = MissionMessage.decode(
         '{"v":1,"q":41,"t":"NACK","re":7,"err":"NO_GPS"}',
       ) as NackMessage;
       expect(nack.respondingTo, 7);
       expect(nack.error, NackError.noGps);
+    });
+
+    test('ACK can carry the beacon that anchors a demo', () {
+      final tx = AckMessage(
+        seq: 40,
+        respondingTo: 1,
+        position: LatLng(50.062975, 19.9157),
+      );
+      expect(tx.encode(),
+          '{"v":1,"q":40,"t":"ACK","re":1,"lat":50.062975,"lon":19.9157}');
+
+      final rx = MissionMessage.decode(tx.encode()) as AckMessage;
+      expect(rx.position!.latitude, closeTo(50.062975, 1e-7));
     });
 
     test('MINE and EVT round-trip', () {
@@ -147,10 +145,9 @@ void main() {
       final messages = <MissionMessage>[
         StartDemoMessage(seq: 1, altitude: 3.0),
         StartMainMessage(seq: 2, corners: _parkJordana, altitude: 8.0),
-        MoveMessage(seq: 3, direction: MoveDirection.forward, distance: 3.0),
+        MoveMessage(seq: 3, target: LatLng(50.062975, 19.9157)),
         LandMessage(seq: 4),
         RthMessage(seq: 5),
-        KillMessage(seq: 6),
         StatusMessage(seq: 7),
         TelemMessage(
           seq: 8,

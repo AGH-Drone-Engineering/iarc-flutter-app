@@ -1,6 +1,7 @@
 # IARC 2026 — Layer 2 Mission Protocol
 
-**Status:** DRAFT v1. Not yet implemented on the Pi or ESP side.
+**Status:** v1. Implemented on both sides over UDP; LoRaCom is wired on the
+ground station only.
 
 Application-level protocol between the ground station and the drones' Raspberry Pi
 companion computers. Messages travel inside the `PAYLOAD` of a LoRaCom `SENDMSG` /
@@ -37,7 +38,7 @@ message built for one is always valid on the other.
 | Max payload        | 248 bytes (LoRaCom `MAX_MESSAGE_SIZE`)                 |
 | Forbidden bytes    | `0x00`, `0x0A`, `0x0D` anywhere in the payload         |
 | Numbers            | Decimal text, no exponent notation (`1e-5` is invalid) |
-| lat / lon          | ≥ 7 decimal places                                     |
+| lat / lon          | 7 decimal places; trailing zeros MAY be trimmed        |
 | alt / dist / speed | 1–2 decimal places, metres                             |
 | Unknown fields     | MUST be ignored                                        |
 | Unknown `t`        | MUST be answered with `NACK` / `UNSUPPORTED`           |
@@ -75,16 +76,8 @@ Layer 2 never carries a drone ID; it comes from the transport
 | ----- | ----- | ----------------------------------------- |
 | `alt` | float | Hover altitude AGL, metres, `0.5 .. 30.0` |
 
-Arm, take off to `alt`, hold position, await `MOVE` / `LAND`.
-
-### `NEXT_STEP`
-
-```json
-{ "v": 1, "q": 8, "t": "NEXT_STEP" }
-```
-
-Advance the demo routine by one step. Valid only in demo mode, otherwise
-`NACK`/`BAD_STATE`.
+Arm, take off to `alt`, hold position, await `MOVE` / `LAND`. The `ACK` carries
+the drone's position, which anchors the demo — see §6.
 
 ### `START_MAIN`
 
@@ -103,32 +96,29 @@ Advance the demo routine by one step. Valid only in demo mode, otherwise
 }
 ```
 
-| Field | Type  | Notes                                                 |
-| ----- | ----- | ----------------------------------------------------- |
-| `c`   | array | Exactly 4 corners, each `[lat, lon]` — latitude first |
-| `alt` | float | Search altitude AGL, metres                           |
+| Field | Type  | Notes                                                  |
+| ----- | ----- | ------------------------------------------------------ |
+| `c`   | array | Exactly 4 corners, each `[lat, lon]` — latitude first  |
+| `alt` | float | Search altitude AGL, metres, `0.5 .. 30.0`             |
 
 Corner order is not significant; both ends normalise to a counter-clockwise loop.
 
 ### `MOVE`
 
 ```json
-{ "v": 1, "q": 3, "t": "MOVE", "dir": "FORWARD", "d": 3.0 }
+{ "v": 1, "q": 3, "t": "MOVE", "to": [50.062975, 19.9157] }
 ```
 
-| Field | Type   | Notes                           |
-| ----- | ------ | ------------------------------- |
-| `dir` | string | See below                       |
-| `d`   | float  | Distance, metres, `0.5 .. 20.0` |
+| Field | Type  | Notes                                       |
+| ----- | ----- | ------------------------------------------- |
+| `to`  | array | Target `[lat, lon]` — latitude first        |
 
-`dir` is one of, matching `demo_mission.commands.Command`:
+Fly to `to`, holding the altitude set by `START_DEMO`. Absolute coordinates, so
+hops do not accumulate error and both ends agree on the frame without sharing an
+origin.
 
-```
-FORWARD  BACK  LEFT  RIGHT  FORWARD_RIGHT  BACK_RIGHT  BACK_LEFT  FORWARD_LEFT
-```
-
-Relative to the drone's body frame. Valid only in demo mode, otherwise
-`NACK`/`BAD_STATE`.
+Arrival is reported with `EVT`/`WAYPOINT_REACHED`. Valid only in demo mode,
+otherwise `NACK`/`BAD_STATE`; a target outside the geo-cage is `NACK`/`GEOFENCE`.
 
 ### `LAND`
 
@@ -147,19 +137,6 @@ Descend and disarm at the current position.
 Return to the launch point at the drone's assigned RTH altitude and land. The altitude
 is keyed off the drone's own number and is not a parameter.
 
-### `KILL`
-
-```json
-{ "v": 1, "q": 6, "t": "KILL", "k": "BE11DEAD" }
-```
-
-| Field | Type   | Notes                                                  |
-| ----- | ------ | ------------------------------------------------------ |
-| `k`   | string | Exactly `"BE11DEAD"`. Any other value MUST be ignored. |
-
-Sent unicast per drone, 3 times, 300 ms apart, regardless of ACK. The drone MUST act on
-it even when it cannot reply.
-
 ### `STATUS`
 
 ```json
@@ -168,19 +145,41 @@ it even when it cannot reply.
 
 Reply with `ACK`, then a `TELEM`.
 
+### Out of scope: the killswitch
+
+Cutting motors is a hardware function of the IARC HAT — the ESP32-S3 drives
+`KILLSWITCH_FC_CTL` / `KILLSWITCH_PSU_CTL` directly
+(`RPi_CM_Drone_Board/firmware_IARC_HAT/src/node/main.cpp`). It deliberately does
+not travel as a Layer 2 message, and this protocol MUST NOT grow one.
+
+The reason is the failure mode a killswitch exists for. Everything in this
+document is decoded on the Pi by a mission process: a kill carried here works
+only while the companion computer has booted, the mission process is alive and
+the JSON codec is reachable. Those are exactly the conditions under which you
+need to cut motors. A path that shares a failure domain with the thing it is
+meant to stop is not a killswitch.
+
+`TELEM`'s `KILLED` state still reports the outcome — the drone says its motors
+are cut regardless of what cut them.
+
 ## 6. Drone → ground
 
 ### `ACK`
 
 ```json
-{ "v": 1, "q": 10, "t": "ACK", "re": 2 }
+{ "v": 1, "q": 10, "t": "ACK", "re": 2, "lat": 50.062975, "lon": 19.9157 }
 ```
 
-| Field | Type | Notes                      |
-| ----- | ---- | -------------------------- |
-| `re`  | int  | The `q` being acknowledged |
+| Field        | Type  | Notes                                            |
+| ------------ | ----- | ------------------------------------------------ |
+| `re`         | int   | The `q` being acknowledged                       |
+| `lat`, `lon` | float | Position when the command was accepted. Optional. |
 
 Means received and accepted, not completed. Completion is reported via `EVT`.
+
+`lat`/`lon` are sent whenever the drone has a fix. They cost nothing extra on
+the wire and make every acknowledgement a position fix, which is what lets a
+`START_DEMO` `ACK` double as the demo's anchor.
 
 ### `NACK`
 
@@ -215,16 +214,18 @@ Means received and accepted, not completed. Completion is reported via `EVT`.
   "lon": 19.9157,
   "alt": 8.2,
   "bat": 14.8,
+  "pct": 87,
   "st": "MAIN"
 }
 ```
 
 | Field        | Type   | Notes                          |
 | ------------ | ------ | ------------------------------ |
-| `lat`, `lon` | float  | Current position, WGS84        |
-| `alt`        | float  | Altitude AGL, metres           |
-| `bat`        | float  | Pack voltage, volts. Optional. |
-| `st`         | string | See below                      |
+| `lat`, `lon` | float  | Current position, WGS84                      |
+| `alt`        | float  | Altitude AGL, metres                         |
+| `bat`        | float  | Pack voltage, volts. Optional.               |
+| `pct`        | int    | Battery remaining, `0..100`. Optional.       |
+| `st`         | string | See below                                    |
 
 | `st`      | Meaning                              |
 | --------- | ------------------------------------ |
@@ -239,7 +240,11 @@ Means received and accepted, not completed. Completion is reported via `EVT`.
 | `LANDING` | Descending                           |
 | `LANDED`  | On the ground, disarmed              |
 | `ERROR`   | Faulted                              |
-| `KILLED`  | Motors cut by `KILL`                 |
+| `KILLED`  | Motors cut by the hardware killswitch |
+
+Send both battery fields when known: `bat` is the raw truth and always
+available, `pct` is what an operator can act on but needs a configured pack
+capacity. Voltage sags under load, so judge charge on `pct` where there is one.
 
 Sent every 1000 ms while airborne, every 5000 ms while `IDLE` / `LANDED`.
 
@@ -276,18 +281,19 @@ misread; dropping one is worse than showing both.
 | -------- | ----- | ------------------------------------------------------------------------------ |
 | `a`, `b` | array | Two opposite corners, each `[lat, lon]` — latitude first. Order is irrelevant. |
 
-Reports a lat/lon-aligned rectangle the drone considers **swept**: every mine
-inside it has already been reported via `MINE`, so the rest of the rectangle is
-clear.
+Reports a lat/lon-aligned rectangle the drone has **processed** — one per
+analysed frame. It does not claim the rectangle is empty: mines found inside it
+are reported separately via `MINE`.
 
-Sent whenever a region completes; a mission emits many. The ground station
-accumulates them, so overlapping or repeated rectangles are harmless and a drone
-need not track what it has already sent.
+Sent immediately as each frame is processed, never batched — a mission emits
+many, and an `RTH` or a lost link must not cost the coverage already earned. The
+ground station accumulates them, so overlapping or repeated rectangles are
+harmless and a drone need not track what it has already sent.
 
 This is what lets the ground station tell _"no mine here"_ apart from _"nobody
 looked here"_. Terrain covered by no `SCAN` is treated as **mined** when planning
-the path — an unswept square is indistinguishable from a dangerous one, and the
-route must not cross it.
+the path — an unprocessed square is indistinguishable from a dangerous one, and
+the route must not cross it.
 
 A drone that never sends `SCAN` remains fully supported: the ground station
 reports zero coverage and declines to plan a route, rather than planning one
@@ -339,20 +345,20 @@ LoRaCom is host-initiated; the board never pushes. The ground station:
 
 ## 8. Demo sequencing
 
-The demo routine is driven by the ground station, one step per round trip. The
-drone holds the choreography; the ground station only advances it and handles
-failure.
+The ground station holds the choreography and issues it one waypoint at a time.
+The drone flies where it is told and reports arrival; it stores no routine.
 
 ```
-START_DEMO ──ACK──► NEXT_STEP ──ACK──► NEXT_STEP ──ACK──► …
-                        │                  │
-                     no ACK              NACK
-                        │                  │
-                        └────── RTH ───────┘
+START_DEMO ──ACK(lat,lon)──► MOVE ──ACK──► WAYPOINT_REACHED ──► MOVE ──► …
+                               │             │
+                            no ACK         NACK
+                               │             │
+                               └──── RTH ────┘
 ```
 
-1. After `START_DEMO` is acknowledged, the ground station sends `NEXT_STEP`.
-2. Each `ACK` of a `NEXT_STEP` triggers the next `NEXT_STEP`.
+1. `START_DEMO` arms the drone and takes it to `alt`. Its `ACK` carries the
+   drone's position — the anchor the ground station lays the figure around.
+2. On `WAYPOINT_REACHED` the ground station sends the next `MOVE`.
 3. If a command is never acknowledged (§7, 3 attempts exhausted) **or** is
    answered with `NACK`, the ground station sends `RTH` to that drone and stops
    advancing its sequence.
@@ -373,10 +379,10 @@ Phone → ESP   GETMSG
 ESP  → Phone  ACK                                     (queue empty)
 
 Phone → ESP   GETMSG
-ESP  → Phone  GETMSG id=3     {"v":1,"q":40,"t":"ACK","re":1}
+ESP  → Phone  GETMSG id=3     {"v":1,"q":40,"t":"ACK","re":1,"lat":50.062975,"lon":19.9157}
 Phone → ESP   ACK                                     (pops the queue)
 
 Phone → ESP   GETMSG
-ESP  → Phone  GETMSG id=3     {"v":1,"q":41,"t":"TELEM","lat":50.0629750,"lon":19.9157000,"alt":3.1,"bat":15.6,"st":"HOVER"}
+ESP  → Phone  GETMSG id=3     {"v":1,"q":41,"t":"TELEM","lat":50.062975,"lon":19.9157,"alt":3.1,"bat":15.6,"st":"HOVER"}
 Phone → ESP   ACK
 ```

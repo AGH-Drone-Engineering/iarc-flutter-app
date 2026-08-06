@@ -1,8 +1,10 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
+import 'package:latlong2/latlong.dart';
 
 import '../models/mission_message.dart';
+import '../pathfinding/local_frame.dart' show offsetLatLng;
 import 'command_tracker.dart';
 import 'global_log.dart';
 
@@ -16,33 +18,55 @@ class DemoProgress {
   final int steps;
   final String? detail;
 
+  /// The vertices this drone is walking, laid out around the anchor its
+  /// `START_DEMO` ACK reported. Empty until that ACK arrives.
+  final List<LatLng> figure;
+
   const DemoProgress({
     required this.droneId,
     required this.phase,
     this.steps = 0,
     this.detail,
+    this.figure = const [],
   });
 
-  DemoProgress copyWith({DemoPhase? phase, int? steps, String? detail}) =>
+  DemoProgress copyWith({
+    DemoPhase? phase,
+    int? steps,
+    String? detail,
+    List<LatLng>? figure,
+  }) =>
       DemoProgress(
         droneId: droneId,
         phase: phase ?? this.phase,
         steps: steps ?? this.steps,
         detail: detail ?? this.detail,
+        figure: figure ?? this.figure,
       );
 
   bool get isActive => phase == DemoPhase.starting || phase == DemoPhase.stepping;
 }
 
 class DemoRunner extends ChangeNotifier {
-  DemoRunner({required CommandTracker tracker, this.maxSteps = 200})
-      : _tracker = tracker {
+  DemoRunner({
+    required CommandTracker tracker,
+    this.maxSteps = 200,
+    this.vertexCount = 8,
+    this.radiusMeters = 5.0,
+  }) : _tracker = tracker {
     _tracker.onAcknowledged = _onAcknowledged;
     _tracker.onFailed = _onFailed;
   }
 
   final CommandTracker _tracker;
   final int maxSteps;
+
+  /// The figure is a regular polygon around the anchor. The ground station owns
+  /// it now: `MOVE` carries absolute coordinates, so the drone stores no routine
+  /// and a changed shape needs no drone-side release -- which is why these are
+  /// operator-settable rather than constants.
+  int vertexCount;
+  double radiusMeters;
 
   final Map<int, DemoProgress> _progress = {};
 
@@ -94,33 +118,62 @@ class DemoRunner extends ChangeNotifier {
           p.copyWith(phase: DemoPhase.finished, detail: event.wire.toLowerCase());
       logInfo('Drone $droneId finished the demo after ${p.steps} step(s)', _tag);
       notifyListeners();
+      return;
     }
+
+    // Arrival is what advances the sequence -- an ACK only means the MOVE was
+    // accepted, and stepping on it would queue the next hop mid-flight.
+    if (event == MissionEvent.waypointReached) _advance(droneId, p);
   }
 
-  void _onAcknowledged(int droneId, MissionMessage command) {
-    final p = _progress[droneId];
-    if (p == null || !p.isActive) return;
-    if (command is! StartDemoMessage && command is! NextStepMessage) return;
-
-    final steps = command is NextStepMessage ? p.steps + 1 : p.steps;
-
+  /// Send the next vertex, or return home once the step cap is hit.
+  void _advance(int droneId, DemoProgress p) {
+    if (p.figure.isEmpty) {
+      _returnHome(droneId, p, 'no anchor - START_DEMO ACK carried no position');
+      return;
+    }
+    final steps = p.steps + 1;
     if (steps >= maxSteps) {
-      logWarn('Drone $droneId hit the $maxSteps-step cap — returning home', _tag);
+      logWarn('Drone $droneId hit the $maxSteps-step cap - returning home', _tag);
       _returnHome(droneId, p.copyWith(steps: steps), 'step cap reached');
       return;
     }
 
+    final target = p.figure[steps % p.figure.length];
     _progress[droneId] = p.copyWith(phase: DemoPhase.stepping, steps: steps);
-    logTrace(_tag, 'drone $droneId acked ${command.type}, advancing to step ${steps + 1}');
+    logTrace(_tag, 'drone $droneId -> vertex ${steps % p.figure.length} '
+        '(${target.latitude},${target.longitude})');
     notifyListeners();
 
-    unawaited(_tracker.send((q) => NextStepMessage(seq: q), dest: droneId));
+    unawaited(_tracker.send((q) => MoveMessage(seq: q, target: target), dest: droneId));
+  }
+
+  void _onAcknowledged(int droneId, MissionMessage command, AckMessage ack) {
+    final p = _progress[droneId];
+    if (p == null || !p.isActive) return;
+    if (command is! StartDemoMessage) return;   // MOVE acks are not arrivals
+
+    final anchor = ack.position;
+    if (anchor == null) {
+      _returnHome(droneId, p, 'START_DEMO ACK carried no position');
+      return;
+    }
+
+    final figure = [
+      for (var i = 0; i < vertexCount; i++)
+        offsetLatLng(anchor, i * 360.0 / vertexCount, radiusMeters),
+    ];
+    logInfo('Drone $droneId anchored at ${anchor.latitude},${anchor.longitude} - '
+        '$vertexCount vertices at ${radiusMeters}m', _tag);
+
+    // steps starts at -1 so the first _advance lands on vertex 0.
+    _advance(droneId, p.copyWith(figure: figure, steps: -1));
   }
 
   void _onFailed(AckFailure failure) {
     final p = _progress[failure.droneId];
     if (p == null || !p.isActive) return;
-    if (failure.message is! StartDemoMessage && failure.message is! NextStepMessage) {
+    if (failure.message is! StartDemoMessage && failure.message is! MoveMessage) {
       return;
     }
     _returnHome(failure.droneId, p, failure.description);

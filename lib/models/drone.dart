@@ -42,6 +42,7 @@ class Drone {
   LatLng? position;
   double? altitude;
   double? battery;
+  int? batteryPercent;
   MissionEvent? lastEvent;
 
   final List<LatLng> track = [];
@@ -91,6 +92,7 @@ class Drone {
     position = t.position;
     altitude = t.altitude;
     if (t.battery != null) battery = t.battery;
+    if (t.batteryPercent != null) batteryPercent = t.batteryPercent;
     track.add(t.position);
     lastSeen = DateTime.now();
   }
@@ -113,6 +115,7 @@ class Drone {
     position = null;
     altitude = null;
     battery = null;
+    batteryPercent = null;
     lastEvent = null;
     track.clear();
   }

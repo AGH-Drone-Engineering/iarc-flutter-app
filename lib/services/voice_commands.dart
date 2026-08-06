@@ -1,5 +1,5 @@
 import '../models/drone.dart';
-import '../models/mission_message.dart';
+import '../models/mission_message.dart' show kBroadcastAddress;
 
 sealed class VoiceIntent {
   const VoiceIntent();
@@ -23,13 +23,6 @@ class ReturnHomeIntent extends VoiceIntent {
 
 class StatusIntent extends VoiceIntent {
   const StatusIntent();
-}
-
-class MoveIntent extends VoiceIntent {
-  final MoveDirection direction;
-
-  final double? distance;
-  const MoveIntent(this.direction, this.distance);
 }
 
 class TargetIntent extends VoiceIntent {
@@ -74,29 +67,6 @@ class VoiceCommandParser {
     RegExp(r'\b(?:status|raport|melduj)\b'),
   ];
 
-  static final _directions = <(RegExp, MoveDirection)>[
-    (RegExp(r'\b(?:forward|front)[\s-]+left\b|\bnorth[\s-]*west\b'), MoveDirection.forwardLeft),
-    (RegExp(r'\b(?:forward|front)[\s-]+right\b|\bnorth[\s-]*east\b'), MoveDirection.forwardRight),
-    (RegExp(r'\bback(?:ward)?[\s-]+left\b|\bsouth[\s-]*west\b'), MoveDirection.backLeft),
-    (RegExp(r'\bback(?:ward)?[\s-]+right\b|\bsouth[\s-]*east\b'), MoveDirection.backRight),
-    (RegExp(r'\b(?:w\s*prz[óo]d|do\s*przodu|naprz[óo]d)\s+(?:w\s*)?lewo\b'), MoveDirection.forwardLeft),
-    (RegExp(r'\b(?:w\s*prz[óo]d|do\s*przodu|naprz[óo]d)\s+(?:w\s*)?prawo\b'), MoveDirection.forwardRight),
-    (RegExp(r'\b(?:w\s*ty[łl]|do\s*ty[łl]u|cofnij)\s+(?:w\s*)?lewo\b'), MoveDirection.backLeft),
-    (RegExp(r'\b(?:w\s*ty[łl]|do\s*ty[łl]u|cofnij)\s+(?:w\s*)?prawo\b'), MoveDirection.backRight),
-    (RegExp(r'\b(?:forward|ahead|straight|front)\b'), MoveDirection.forward),
-    (RegExp(r'\b(?:w\s*prz[óo]d|do\s*przodu|naprz[óo]d|prosto)\b'), MoveDirection.forward),
-    (RegExp(r'\b(?:back(?:ward)?|reverse)\b'), MoveDirection.back),
-    (RegExp(r'\b(?:w\s*ty[łl]|do\s*ty[łl]u|cofnij)\b'), MoveDirection.back),
-    (RegExp(r'\bleft\b'), MoveDirection.left),
-    (RegExp(r'\b(?:w\s*)?lewo\b'), MoveDirection.left),
-    (RegExp(r'\bright\b'), MoveDirection.right),
-    (RegExp(r'\b(?:w\s*)?prawo\b'), MoveDirection.right),
-  ];
-
-  static final _distance = RegExp(
-    r'(\d+(?:[\.,]\d+)?)\s*(?:m\b|met(?:er|re)s?\b|metr(?:y|ów|ow|a)?\b)',
-  );
-
   static final _broadcast = RegExp(
     r'\b(?:broadcast|all(?:\s+drones?)?|everyone|wszystkie(?:\s+drony)?|do\s+wszystkich)\b',
   );
@@ -135,15 +105,6 @@ class VoiceCommandParser {
       return VoiceResult(intent: const StatusIntent(), target: target);
     }
 
-    for (final (re, dir) in _directions) {
-      if (re.hasMatch(text)) {
-        return VoiceResult(
-          intent: MoveIntent(dir, _parseDistance(text)),
-          target: target,
-        );
-      }
-    }
-
     if (target != null) {
       return VoiceResult(intent: TargetIntent(target), target: target);
     }
@@ -152,12 +113,6 @@ class VoiceCommandParser {
 
   bool _matchesAny(List<RegExp> patterns, String text) =>
       patterns.any((re) => re.hasMatch(text));
-
-  double? _parseDistance(String text) {
-    final m = _distance.firstMatch(text);
-    if (m == null) return null;
-    return double.tryParse(m.group(1)!.replaceAll(',', '.'));
-  }
 
   int? _parseTarget(String text) {
     if (_broadcast.hasMatch(text)) return kBroadcastAddress;

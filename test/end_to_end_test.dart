@@ -159,10 +159,9 @@ void main() {
   test('every message type survives framing intact', () {
     final messages = <MissionMessage>[
       StartDemoMessage(seq: 1, altitude: 3.0),
-      MoveMessage(seq: 2, direction: MoveDirection.backRight, distance: 2.5),
+      MoveMessage(seq: 2, target: LatLng(50.062975, 19.9157)),
       LandMessage(seq: 3),
       RthMessage(seq: 4),
-      KillMessage(seq: 5),
       StatusMessage(seq: 6),
       AckMessage(seq: 7, respondingTo: 1),
       NackMessage(seq: 8, respondingTo: 1, error: NackError.geofence),

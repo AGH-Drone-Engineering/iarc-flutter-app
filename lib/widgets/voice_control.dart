@@ -103,10 +103,6 @@ class _VoiceControlState extends State<VoiceControl> {
       case StatusIntent():
         await app.requestStatus(target: target);
         _accept('STATUS → $who');
-      case MoveIntent(:final direction, :final distance):
-        if (distance != null) await app.setStepDistance(distance);
-        await app.move(direction, target: target);
-        _accept('${direction.wire} ${app.stepDistance.toStringAsFixed(1)} m → $who');
       case TargetIntent():
         _accept('Target: $who');
     }

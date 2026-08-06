@@ -74,7 +74,7 @@ class CommandTracker extends ChangeNotifier {
   final Map<int, _PendingGroup> _groups = {};
   final Map<int, AckFailure> _failures = {};
 
-  void Function(int droneId, MissionMessage command)? onAcknowledged;
+  void Function(int droneId, MissionMessage command, AckMessage ack)? onAcknowledged;
   void Function(AckFailure failure)? onFailed;
 
   List<AckFailure> get failures =>
@@ -121,20 +121,6 @@ class CommandTracker extends ChangeNotifier {
       return;
     }
     _arm(group);
-  }
-
-  Future<void> sendUnacknowledged(
-    MissionMessage Function(int seq) build, {
-    required int dest,
-    int repeat = 3,
-    Duration gap = const Duration(milliseconds: 300),
-  }) async {
-    final message = build(_seq.take());
-    logTrace(_tag, '${message.type} q=${message.seq} dest=$dest ×$repeat unacked');
-    for (var i = 0; i < repeat; i++) {
-      await _send(dest, message);
-      if (i < repeat - 1) await Future<void>.delayed(gap);
-    }
   }
 
   void _arm(_PendingGroup group) {
@@ -191,7 +177,9 @@ class CommandTracker extends ChangeNotifier {
         final acked = _groups[respondingTo]?.message;
         _resolve(from, respondingTo);
         _clearFailureOnContact(from);
-        if (acked != null) onAcknowledged?.call(from, acked);
+        if (acked != null) {
+          onAcknowledged?.call(from, acked, message);
+        }
 
       case NackMessage(:final respondingTo, :final error):
         final group = _groups[respondingTo];

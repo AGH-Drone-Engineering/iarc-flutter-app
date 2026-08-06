@@ -47,7 +47,8 @@ class AppState extends ChangeNotifier {
   static const _kCornersKey = 'corners_v1';
   static const _kDemoAltKey = 'demo_alt_v1';
   static const _kMainAltKey = 'main_alt_v1';
-  static const _kStepKey = 'demo_step_v1';
+  static const _kVertexKey = 'demo_vertices_v1';
+  static const _kRadiusKey = 'demo_radius_v1';
 
   SharedPreferences? _prefs;
   Future<SharedPreferences> _ensurePrefs() async =>
@@ -64,7 +65,11 @@ class AppState extends ChangeNotifier {
 
   double demoAltitude = 3.0;
   double mainAltitude = 8.0;
-  double stepDistance = 3.0;
+
+  /// Shape of the demo figure. Lives here, not on the drone: MOVE carries
+  /// absolute coordinates, so changing it needs no drone-side release.
+  int get demoVertices => demo.vertexCount;
+  double get demoRadius => demo.radiusMeters;
 
   String connectionStatus = 'No device connected';
   LatLng? userLocation;
@@ -251,16 +256,6 @@ class AppState extends ChangeNotifier {
     return true;
   }
 
-  Future<void> move(MoveDirection direction, {int? target}) {
-    final dest = target ?? _selectedTarget;
-    logTrace(_tag, 'move ${direction.wire} ${stepDistance}m '
-        'dest=${Drone.nameFor(dest)}');
-    return tracker.send(
-      (q) => MoveMessage(seq: q, direction: direction, distance: stepDistance),
-      dest: dest,
-    );
-  }
-
   Future<void> land({int? target}) => tracker.send(
         (q) => LandMessage(seq: q),
         dest: target ?? _selectedTarget,
@@ -276,15 +271,6 @@ class AppState extends ChangeNotifier {
         dest: target ?? _selectedTarget,
       );
 
-  Future<void> kill({int? target}) async {
-    final dest = target ?? _selectedTarget;
-    final targets = dest == kBroadcastAddress ? Drone.allIds : <int>[dest];
-    logWarn('KILL sent to ${targets.map(Drone.nameFor).join(", ")}', _tag);
-    for (final id in targets) {
-      await tracker.sendUnacknowledged((q) => KillMessage(seq: q), dest: id);
-    }
-  }
-
   void setSelectedTarget(int id) {
     if (_selectedTarget == id) return;
     _selectedTarget = id;
@@ -295,8 +281,9 @@ class AppState extends ChangeNotifier {
   Future<void> _loadSettings() async {
     final p = await _ensurePrefs();
     demoAltitude = p.getDouble(_kDemoAltKey) ?? 3.0;
+    demo.vertexCount = p.getInt(_kVertexKey) ?? 8;
+    demo.radiusMeters = p.getDouble(_kRadiusKey) ?? 5.0;
     mainAltitude = p.getDouble(_kMainAltKey) ?? 8.0;
-    stepDistance = p.getDouble(_kStepKey) ?? 3.0;
     notifyListeners();
   }
 
@@ -306,17 +293,24 @@ class AppState extends ChangeNotifier {
     (await _ensurePrefs()).setDouble(_kDemoAltKey, v);
   }
 
+  Future<void> setDemoVertices(double v) async {
+    demo.vertexCount = v.round();
+    notifyListeners();
+    (await _ensurePrefs()).setInt(_kVertexKey, demo.vertexCount);
+  }
+
+  Future<void> setDemoRadius(double v) async {
+    demo.radiusMeters = v;
+    notifyListeners();
+    (await _ensurePrefs()).setDouble(_kRadiusKey, v);
+  }
+
   Future<void> setMainAltitude(double v) async {
     mainAltitude = v;
     notifyListeners();
     (await _ensurePrefs()).setDouble(_kMainAltKey, v);
   }
 
-  Future<void> setStepDistance(double v) async {
-    stepDistance = v;
-    notifyListeners();
-    (await _ensurePrefs()).setDouble(_kStepKey, v);
-  }
 
   Future<void> _loadCorners() async {
     final prefs = await _ensurePrefs();

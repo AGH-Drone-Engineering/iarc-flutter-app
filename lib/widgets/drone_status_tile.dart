@@ -136,9 +136,12 @@ class _DroneStatusTileState extends State<DroneStatusTile> {
                 crossAxisAlignment: CrossAxisAlignment.end,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  if (d.battery != null)
+                  if (d.batteryPercent != null || d.battery != null)
                     Text(
-                      '${d.battery!.toStringAsFixed(1)} V',
+                      [
+                        if (d.batteryPercent != null) '${d.batteryPercent}%',
+                        if (d.battery != null) '${d.battery!.toStringAsFixed(1)} V',
+                      ].join('  '),
                       style: const TextStyle(
                         fontWeight: FontWeight.w600,
                         fontFeatures: [FontFeature.tabularFigures()],

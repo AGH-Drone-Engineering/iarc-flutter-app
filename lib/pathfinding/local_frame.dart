@@ -12,6 +12,22 @@ import 'package:latlong2/latlong.dart';
 const double _metersPerDegLat = 110540.0;
 const double _metersPerDegLon = 111320.0;
 
+/// Punkt oddalony o `meters` od `from` wzdłuż azymutu `bearingDegrees`
+/// (0 = północ, rośnie na wschód).
+///
+/// Ta sama płaska aproksymacja co [LocalFrame] i ten sam zakres stosowalności:
+/// dobra do kilkuset metrów, czyli znacznie więcej niż jeden krok demo.
+LatLng offsetLatLng(LatLng from, double bearingDegrees, double meters) {
+  final rad = bearingDegrees * math.pi / 180.0;
+  final north = meters * math.cos(rad);
+  final east = meters * math.sin(rad);
+  final lonScale = _metersPerDegLon * math.cos(from.latitude * math.pi / 180.0);
+  return LatLng(
+    from.latitude + north / _metersPerDegLat,
+    from.longitude + east / lonScale,
+  );
+}
+
 /// Punkt w lokalnym układzie metrycznym.
 class Vec2 {
   const Vec2(this.x, this.y);

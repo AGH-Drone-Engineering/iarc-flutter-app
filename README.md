@@ -1,128 +1,117 @@
-# IARC 2026 — aplikacja stacji naziemnej
+# IARC 2026 — ground station
 
-Flutter (Android). Steruje dronami przez płytkę ESP podłączoną po USB.
+Flutter app (Android). Commands the drone swarm and plans the ground route
+through the minefield.
 
 ```
-Telefon ──USB──► ESP naziemny ──LoRa──► HAT drona ──UART──► Raspberry Pi
+phone ──USB──► ground ESP ──LoRa──► drone HAT ──UART──► Raspberry Pi
 ```
 
-Protokół: **[PROTOCOL.md](PROTOCOL.md)**.
+Wire protocol: **[PROTOCOL.md](PROTOCOL.md)**.
 
-## Transport
+## Transports
 
-Dwie drogi do dronów, przełączane **w działającej aplikacji** (zakładka Link),
-bez rebuildu. Protokół misji jest identyczny — różni się tylko łącze.
+Switchable at runtime in the Link tab, no rebuild. Identical message set on both.
 
 | | LoRa (USB) | UDP (Wi-Fi) |
 |---|---|---|
-| Droga | telefon → ESP → LoRa → HAT → Pi | telefon → Wi-Fi → Pi |
-| Ramkowanie | LoRaCom + CRC16 | jeden komunikat = jeden datagram |
-| Odbiór | polling `GETMSG` co 200 ms | push |
+| Path | phone → ESP → LoRa → HAT → Pi | phone → Wi-Fi → Pi |
+| Framing | LoRaCom `TYPE\|ID\|LEN\|PAYLOAD\|CRC16` | one message per datagram |
+| Receive | `GETMSG` poll every 200 ms | pushed |
 
-> HAT mostkuje LoRaCom na GPIO17/18, nie na USB-CDC. Do czasu zmiany firmware'u
-> telefon podłączamy przez przejściówkę USB-UART do tych pinów.
+UDP is the fallback for when the ESP board isn't ready. The app listens on
+`14650`; drones default to `raspi-usa-<id>.local:14660`, configured in the Link
+tab and persisted. A drone is identified by source address, so each needs its
+own — datagrams from unknown hosts are dropped with a rate-limited warning.
 
-**UDP** to zapas na wypadek niegotowej płytki ESP. W zakładce Link ustawia się port
-nasłuchu i `host:port` per dron — hostname (np. `raspi-usa-1.local`) albo IP,
-rozwiązywane przy połączeniu. Konfiguracja jest zapamiętywana. Dron rozpoznawany
-po adresie źródłowym, więc każdy musi mieć własny; datagram z nieznanego hosta
-trafia do logów jako ostrzeżenie.
+> The HAT bridges LoRaCom on GPIO17/18, not USB-CDC. Until that firmware
+> changes, connect the phone through a USB-UART adapter to those pins.
 
-## Zakładki
+## Tabs
 
 | | |
 |---|---|
-| **Mission** | Sterowanie misją, postęp demo, status floty, alerty braku ACK |
-| **Map** | Pozycje dronów, ślad, miny, pole misji |
-| **Field** | 4 narożniki pola (dowolna kolejność) |
-| **Logs** | Logi |
-| **Link** | Połączenie USB, diagnostyka |
+| **Mission** | Commands, demo progress, fleet status, missing-ACK alerts |
+| **Map** | Drone positions, tracks, mines, field |
+| **Field** | The four field corners, any order |
+| **Logs** | Session logs |
+| **Link** | Transport, endpoints, diagnostics |
+| **Path** | Ground route through the minefield |
 
-## Komendy
+## Commands
 
-| Komenda | Parametry |
-|---|---|
-| `START_DEMO` | wysokość zawisu |
-| `NEXT_STEP` | — |
-| `START_MAIN` | 4 narożniki + wysokość |
-| `MOVE` | kierunek + dystans |
-| `LAND` / `RTH` / `STATUS` | — |
-| `KILL` | — |
+`START_DEMO` (hover altitude) · `START_MAIN` (4 corners + altitude) ·
+`MOVE` (absolute `[lat, lon]`) · `LAND` · `RTH` · `STATUS`
 
-## Misja demo
+Drones are `Bajer 1`–`Bajer 4` (ids 1–4); `0xFF` broadcasts to all.
 
-Po `START_DEMO` aplikacja prowadzi sekwencję sama, bez udziału operatora:
+**ACK.** Every command carries a sequence number and the drone answers
+`ACK`/`NACK` with it inside 2 s. Three attempts reusing the same number, so the
+drone can filter duplicates; after that the operator gets an alert. Broadcasts
+are tracked per drone.
+
+**Demo.** The app holds the choreography; the drone stores no routine. The
+`START_DEMO` ACK carries the drone's position, the app lays a figure around that
+anchor and issues it one vertex at a time:
 
 ```
-ACK          → NEXT_STEP
-brak ACK     → RTH
-NACK         → RTH
-MISSION_DONE → koniec
+ACK(lat,lon)      → MOVE to vertex 0
+WAYPOINT_REACHED  → MOVE to the next vertex
+NACK / no ACK     → RTH
+MISSION_DONE      → done
 ```
 
-Każdy dron ma własny stan i licznik kroków; postęp widać w zakładce Mission.
-Limit 200 kroków jako bezpiecznik. `Stop` przerywa sekwencję bez wysyłania RTH.
+Arrival advances the sequence, not the ACK — an ACK only means the `MOVE` was
+accepted. Each drone has its own state and step counter, capped at 200. `Stop`
+ends the sequence without sending RTH. The D-pad issues single `MOVE`s
+independently, resolving direction + step distance against the drone's last
+known position.
 
-D-pad pod sekwencją wysyła pojedyncze `MOVE` — sterowanie ręczne, niezależne
-od autopilota.
+**Killswitch — not in this app.** Cutting motors is a hardware function of the
+HAT (the ESP32-S3 drives `KILLSWITCH_FC_CTL` / `KILLSWITCH_PSU_CTL`). A kill
+carried over Layer 2 would only work while the Pi is up and the mission process
+alive — exactly when it isn't needed. `TELEM`'s `KILLED` state is still shown.
 
-## ACK
+## Path planning
 
-Każda komenda ma numer sekwencyjny, dron odpowiada `ACK`/`NACK` z tym numerem
-w ciągu 2 s. Po 3 próbach (ten sam numer, więc dron może odfiltrować duplikat)
-operator dostaje alert. Broadcast śledzony per dron.
+The Path tab turns field corners, `MINE` reports and `SCAN` coverage into a
+ground route. Terrain no `SCAN` covers counts as mined, so a swarm that never
+reports coverage yields no route rather than an unsafe one.
 
-## KILL
+Two solvers, both run in a background isolate:
 
-Przytrzymanie 1 s. Unicast do każdego drona, 3×, bez czekania na ACK.
+- **Grid** — port of `minefield_path/gridsolver.py`; maximises the competition
+  score from `spec.txt`. Exports `path.txt` for the judges.
+- **Voronoi** — Delaunay → Voronoi graph → bottleneck Dijkstra; maximises
+  clearance from the nearest mine.
 
-> Łańcuch KILL nie jest zamknięty: Pi ignoruje sygnał, ESP nie sprawdza payloadu,
-> piny killswitcha są na stałe `HIGH` (commit `fd6abd2`). Aplikacja robi swoją
-> połowę — druga musi powstać.
+Recompute is manual — a full 40×150 field takes several hundred ms, so it does
+not re-run on every incoming mine. Stale results are marked as such.
 
-## Logi
+## Logs
 
-Trwałe, dzielone per uruchomienie aplikacji (JSONL, 20 ostatnich sesji).
+JSONL, one file per app run, 20 sessions kept. Levels `TRACE` `INFO` `SENT`
+`RECV` `WARN` `ERROR`, filterable by level, text and tag. Payloads that fail
+protocol validation appear only at `TRACE`, in full and escaped. Idle polling
+logs nothing.
 
-- Wybór sesji z listy, starsze wczytywane z dysku na żądanie
-- Poziomy: `TRACE`, `INFO`, `SENT`, `RECV`, `WARN`, `ERROR` — filtr wielokrotny
-- Filtr tekstowy po treści i tagu (`link`, `udp`, `ack`, `demo`, `app`)
-- `Copy` kopiuje aktualnie przefiltrowane wpisy wybranej sesji
-- Wpisy dłuższe niż 3 linie zwinięte, z `expand` / `collapse`
-- `TRACE` domyślnie zbierany, ale ukryty; przełącznik `Capture trace` wyłącza
-  zbieranie (przy 5 pollach/s to ~20 linii/s)
+## Voice
 
-Dane, które nie przeszły walidacji protokołu, nigdy nie trafiają na poziom widoczny
-domyślnie — surowa treść ląduje wyłącznie w `TRACE`, **w całości**, ze zeskejpowanymi
-znakami kontrolnymi. Datagram z nieznanego hosta nie jest logowany wcale (tylko adres
-i rozmiar, maks. raz na minutę na host).
+English and Polish, optionally prefixed with a drone (`drone 2`, `all`,
+`Bajer 3`). Covers `START_DEMO`, `START_MAIN`, `LAND`, `RTH`, `STATUS`, and
+`MOVE` with a direction and distance.
 
-Bezczynny polling nie loguje nic. `GETMSG` odbity pustym `ACK` (kolejka radia pusta)
-to stan spoczynkowy, więc jest pomijany — w logach zostają tylko zdarzenia: ramka
-z treścią, retransmisja, timeout i dane nieparsowalne.
-
-## Komendy głosowe
-
-Na początku może wystąpić desygnacja drona (`dron 2`, `wszystkie`, `Bajer 3`).
-`KILL` celowo niedostępny głosowo.
-
-| Intencja | Przykłady |
-|---|---|
-| `START_DEMO` | „start demo", „rozpocznij misję demo" |
-| `START_MAIN` | „start misję główną", „run field mission" |
-| `LAND` | „ląduj", „land" |
-| `RTH` | „wracaj", „do domu", „return" |
-| `STATUS` | „status", „raport", „ping" |
-| `MOVE` | „w przód 5 m", „forward left", „back 3 meters" |
-
-# Development
+## Build
 
 ```bash
-flutter test        # 87 testów
+flutter pub get
+flutter test          # 161 tests
 flutter analyze
 flutter build apk --release --split-per-abi
+flutter run           # then pick a device
 ```
 
-`flutter run` i wybór urządzenia — tylko Android, iOS nie działa (TODO).
+Needs Flutter with Dart SDK `^3.9.0`. **Android only** — iOS is not wired up.
 
-Release: `git tag vx.y.z && git push origin vx.y.z`, .apk pojawia się po ~20 min.
+Release: `git tag vX.Y.Z && git push origin vX.Y.Z`. CI builds per-ABI APKs plus
+an AAB and attaches them to the GitHub release (~20 min).

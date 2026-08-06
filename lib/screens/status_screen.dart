@@ -2,14 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../models/drone.dart';
-import '../models/mission_message.dart';
 import '../state/app_state.dart';
 import '../widgets/ack_alert_banner.dart';
 import '../widgets/connection_bar.dart';
 import '../widgets/drone_status_tile.dart';
 import '../widgets/drone_visuals.dart';
 import '../widgets/mine_identity.dart';
-import '../widgets/number_stepper.dart';
 import '../widgets/section_card.dart';
 
 /// Everything the mission tab deliberately keeps off screen: full telemetry,
@@ -44,8 +42,7 @@ class StatusScreen extends StatelessWidget {
               const _DemoSequenceSection(),
             ],
             const SizedBox(height: 16),
-            const _ManualMovementSection(),
-            if (app.mines.isNotEmpty) ...[
+              if (app.mines.isNotEmpty) ...[
               const SizedBox(height: 16),
               const _DetectionsSection(),
             ],
@@ -178,94 +175,6 @@ class _DemoSequenceSection extends StatelessWidget {
                           fontFeatures: const [FontFeature.tabularFigures()],
                         ),
                   ),
-                ],
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-}
-
-/// Raw `MOVE` commands. Not part of the demo sequence, which advances itself
-/// one `NEXT_STEP` per ACK and carries no direction.
-class _ManualMovementSection extends StatelessWidget {
-  const _ManualMovementSection();
-
-  static const _layout = <List<MoveDirection?>>[
-    [MoveDirection.forwardLeft, MoveDirection.forward, MoveDirection.forwardRight],
-    [MoveDirection.left, null, MoveDirection.right],
-    [MoveDirection.backLeft, MoveDirection.back, MoveDirection.backRight],
-  ];
-
-  static const _icons = <MoveDirection, IconData>{
-    MoveDirection.forward: Icons.arrow_upward,
-    MoveDirection.back: Icons.arrow_downward,
-    MoveDirection.left: Icons.arrow_back,
-    MoveDirection.right: Icons.arrow_forward,
-    MoveDirection.forwardLeft: Icons.north_west,
-    MoveDirection.forwardRight: Icons.north_east,
-    MoveDirection.backLeft: Icons.south_west,
-    MoveDirection.backRight: Icons.south_east,
-  };
-
-  @override
-  Widget build(BuildContext context) {
-    final app = context.watch<AppState>();
-    final enabled = app.isConnected;
-
-    return SectionCard(
-      title: 'Manual movement',
-      trailing: Text(
-        'body frame',
-        style: Theme.of(context).textTheme.labelSmall,
-      ),
-      child: Column(
-        children: [
-          Align(
-            alignment: Alignment.centerLeft,
-            child: Text(
-              'Sends MOVE to ${Drone.nameFor(app.selectedTarget)}. '
-              'Accepted only while the drone is in demo mode.',
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
-          ),
-          const SizedBox(height: 8),
-          NumberStepper(
-            label: 'Step distance',
-            value: app.stepDistance,
-            min: 0.5,
-            max: 20.0,
-            step: 0.5,
-            unit: 'm',
-            onChanged: app.setStepDistance,
-          ),
-          const SizedBox(height: 12),
-          for (final row in _layout)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 8),
-              child: Row(
-                children: [
-                  for (final dir in row)
-                    Expanded(
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 4),
-                        child: dir == null
-                            ? Center(
-                                child: Text(
-                                  '${app.stepDistance.toStringAsFixed(1)} m',
-                                  style: Theme.of(context).textTheme.labelMedium,
-                                ),
-                              )
-                            : OutlinedButton(
-                                onPressed: enabled ? () => app.move(dir) : null,
-                                style: OutlinedButton.styleFrom(
-                                  padding: const EdgeInsets.symmetric(vertical: 18),
-                                ),
-                                child: Icon(_icons[dir]),
-                              ),
-                      ),
-                    ),
                 ],
               ),
             ),

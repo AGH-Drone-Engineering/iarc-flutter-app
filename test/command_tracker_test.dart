@@ -190,20 +190,4 @@ void main() {
     tracker.dispose();
   });
 
-  test('KILL is repeated without waiting for ACKs', () async {
-    final sender = FakeSender();
-    final tracker = makeTracker(sender);
-
-    await tracker.sendUnacknowledged(
-      (q) => KillMessage(seq: q),
-      dest: 1,
-      repeat: 3,
-      gap: const Duration(milliseconds: 1),
-    );
-
-    expect(sender.sent, hasLength(3));
-    expect(sender.sent.every((s) => s.message is KillMessage), isTrue);
-    expect(tracker.isAwaitingAck(1), isFalse, reason: 'KILL must not block on an ACK');
-    tracker.dispose();
-  });
 }

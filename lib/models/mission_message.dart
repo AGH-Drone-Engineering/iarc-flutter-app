@@ -7,7 +7,6 @@ import '../services/lora_frame.dart';
 
 const int kProtocolVersion = 1;
 const int kBroadcastAddress = 0xFF; // RFNet's ADDR_BROADCAST
-const String kKillMagic = 'BE11DEAD'; // from 2025
 
 class MissionMessageException implements Exception {
   final String message;
@@ -21,25 +20,6 @@ class UnsupportedMessageTypeException extends MissionMessageException {
   final int? seq;
   const UnsupportedMessageTypeException(this.messageType, this.seq)
       : super('Unsupported message type: $messageType');
-}
-
-enum MoveDirection {
-  forward('FORWARD'),
-  back('BACK'),
-  left('LEFT'),
-  right('RIGHT'),
-  forwardRight('FORWARD_RIGHT'),
-  backRight('BACK_RIGHT'),
-  backLeft('BACK_LEFT'),
-  forwardLeft('FORWARD_LEFT');
-
-  const MoveDirection(this.wire);
-  final String wire;
-
-  static MoveDirection fromWire(String s) => MoveDirection.values.firstWhere(
-        (d) => d.wire == s,
-        orElse: () => throw MissionMessageException('Unknown direction: $s'),
-      );
 }
 
 enum DroneState {
@@ -166,7 +146,13 @@ sealed class MissionMessage {
 
     final type = _string(parsed, 't');
     return switch (type) {
-      'ACK' => AckMessage(seq: seq, respondingTo: _int(parsed, 're')),
+      'ACK' => AckMessage(
+          seq: seq,
+          respondingTo: _int(parsed, 're'),
+          position: parsed.containsKey('lat') && parsed.containsKey('lon')
+              ? LatLng(_double(parsed, 'lat'), _double(parsed, 'lon'))
+              : null,
+        ),
       'NACK' => NackMessage(
           seq: seq,
           respondingTo: _int(parsed, 're'),
@@ -177,6 +163,7 @@ sealed class MissionMessage {
           position: LatLng(_double(parsed, 'lat'), _double(parsed, 'lon')),
           altitude: _double(parsed, 'alt'),
           battery: _optionalDouble(parsed, 'bat'),
+          batteryPercent: _optionalDouble(parsed, 'pct')?.round(),
           state: DroneState.fromWire(_string(parsed, 'st')),
         ),
       'MINE' => MineMessage(
@@ -197,25 +184,12 @@ sealed class MissionMessage {
           corners: _corners(parsed),
           altitude: _double(parsed, 'alt'),
         ),
-      'MOVE' => MoveMessage(
-          seq: seq,
-          direction: MoveDirection.fromWire(_string(parsed, 'dir')),
-          distance: _double(parsed, 'd'),
-        ),
-      'NEXT_STEP' => NextStepMessage(seq: seq),
+      'MOVE' => MoveMessage(seq: seq, target: _latLonPair(parsed, 'to')),
       'LAND' => LandMessage(seq: seq),
       'RTH' => RthMessage(seq: seq),
-      'KILL' => _decodeKill(parsed, seq),
       'STATUS' => StatusMessage(seq: seq),
       _ => throw UnsupportedMessageTypeException(type, seq),
     };
-  }
-
-  static KillMessage _decodeKill(Map<String, Object?> json, int seq) {
-    if (_string(json, 'k') != kKillMagic) {
-      throw const MissionMessageException('KILL magic word mismatch — ignoring');
-    }
-    return KillMessage(seq: seq);
   }
 }
 
@@ -245,6 +219,11 @@ class StartMainMessage extends MissionMessage {
         'START_MAIN needs exactly 4 corners, got ${corners.length}',
       );
     }
+    if (altitude < 0.5 || altitude > 30.0) {
+      throw MissionMessageException(
+        'START_MAIN altitude $altitude is outside 0.5..30.0 m',
+      );
+    }
   }
 
   @override
@@ -261,14 +240,11 @@ class StartMainMessage extends MissionMessage {
 }
 
 class MoveMessage extends MissionMessage {
-  final MoveDirection direction;
-  final double distance;
+  /// Absolute target. Hops carry no reference frame of their own, so they
+  /// cannot drift and both ends agree without sharing an origin.
+  final LatLng target;
 
-  const MoveMessage({
-    required super.seq,
-    required this.direction,
-    required this.distance,
-  });
+  const MoveMessage({required super.seq, required this.target});
 
   @override
   String get type => 'MOVE';
@@ -276,19 +252,8 @@ class MoveMessage extends MissionMessage {
   bool get expectsAck => true;
   @override
   Map<String, Object?> get fields => {
-        'dir': direction.wire,
-        'd': _round(distance, 2),
+        'to': [_round(target.latitude, 7), _round(target.longitude, 7)],
       };
-}
-
-class NextStepMessage extends MissionMessage {
-  const NextStepMessage({required super.seq});
-  @override
-  String get type => 'NEXT_STEP';
-  @override
-  bool get expectsAck => true;
-  @override
-  Map<String, Object?> get fields => const {};
 }
 
 class LandMessage extends MissionMessage {
@@ -311,14 +276,6 @@ class RthMessage extends MissionMessage {
   Map<String, Object?> get fields => const {};
 }
 
-class KillMessage extends MissionMessage {
-  const KillMessage({required super.seq});
-  @override
-  String get type => 'KILL';
-  @override
-  Map<String, Object?> get fields => const {'k': kKillMagic};
-}
-
 class StatusMessage extends MissionMessage {
   const StatusMessage({required super.seq});
   @override
@@ -331,11 +288,27 @@ class StatusMessage extends MissionMessage {
 
 class AckMessage extends MissionMessage {
   final int respondingTo;
-  const AckMessage({required super.seq, required this.respondingTo});
+
+  /// Where the drone was when it accepted the command, when it had a fix.
+  /// A `START_DEMO` ACK's position is the anchor the demo figure is laid around.
+  final LatLng? position;
+
+  const AckMessage({
+    required super.seq,
+    required this.respondingTo,
+    this.position,
+  });
+
   @override
   String get type => 'ACK';
   @override
-  Map<String, Object?> get fields => {'re': respondingTo};
+  Map<String, Object?> get fields => {
+        're': respondingTo,
+        if (position != null) ...{
+          'lat': _round(position!.latitude, 7),
+          'lon': _round(position!.longitude, 7),
+        },
+      };
 }
 
 class NackMessage extends MissionMessage {
@@ -355,7 +328,13 @@ class NackMessage extends MissionMessage {
 class TelemMessage extends MissionMessage {
   final LatLng position;
   final double altitude;
+  /// Pack voltage. Raw and always available, but sags under load.
   final double? battery;
+
+  /// Remaining charge, 0..100. What an operator should judge on, when the
+  /// flight controller has a pack capacity configured to derive it from.
+  final int? batteryPercent;
+
   final DroneState state;
 
   const TelemMessage({
@@ -364,6 +343,7 @@ class TelemMessage extends MissionMessage {
     required this.altitude,
     required this.state,
     this.battery,
+    this.batteryPercent,
   });
 
   @override
@@ -374,6 +354,7 @@ class TelemMessage extends MissionMessage {
         'lon': _round(position.longitude, 7),
         'alt': _round(altitude, 2),
         if (battery != null) 'bat': _round(battery!, 2),
+        if (batteryPercent != null) 'pct': batteryPercent,
         'st': state.wire,
       };
 }

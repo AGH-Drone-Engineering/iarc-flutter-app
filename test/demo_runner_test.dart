@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:latlong2/latlong.dart';
 import 'package:flutter_esp_android_communication/models/mission_message.dart';
 import 'package:flutter_esp_android_communication/services/command_tracker.dart';
 import 'package:flutter_esp_android_communication/services/demo_runner.dart';
@@ -37,18 +38,29 @@ const _timeout = Duration(milliseconds: 40);
 }
 
 /// Simulates the drone acknowledging whatever it was last sent.
-void ackLast(CommandTracker tracker, FakeSender sender, int drone) {
+const _anchor = LatLng(50.062975, 19.9157);
+
+void ackLast(CommandTracker tracker, FakeSender sender, int drone,
+    {LatLng? position = _anchor}) {
   tracker.handleIncoming(
     drone,
-    AckMessage(seq: 9000, respondingTo: sender.lastTo(drone).seq),
+    AckMessage(
+      seq: 9000,
+      respondingTo: sender.lastTo(drone).seq,
+      position: position,
+    ),
   );
 }
+
+/// Arrival at the current vertex -- this is what advances the sequence now.
+void arrive(DemoRunner runner, int drone) =>
+    runner.handleEvent(drone, MissionEvent.waypointReached);
 
 Future<void> settle([int multiplier = 10]) =>
     Future<void>.delayed(_timeout * multiplier);
 
 void main() {
-  test('an ACK advances the sequence to NEXT_STEP', () async {
+  test('the START_DEMO ACK anchors the figure and sends the first vertex', () async {
     final sender = FakeSender();
     final (:tracker, :runner) = build(sender);
 
@@ -59,33 +71,42 @@ void main() {
     ackLast(tracker, sender, 1);
     await Future<void>.microtask(() {});
 
-    expect(sender.lastTo(1), isA<NextStepMessage>());
+    expect(sender.lastTo(1), isA<MoveMessage>());
     expect(runner.progressFor(1)!.phase, DemoPhase.stepping);
     expect(runner.progressFor(1)!.steps, 0);
+    expect(runner.progressFor(1)!.figure, hasLength(8));
 
-    ackLast(tracker, sender, 1);
+    arrive(runner, 1);
     await Future<void>.microtask(() {});
 
-    expect(sender.to(1).whereType<NextStepMessage>(), hasLength(2));
+    expect(sender.to(1).whereType<MoveMessage>(), hasLength(2));
     expect(runner.progressFor(1)!.steps, 1);
 
     runner.dispose();
     tracker.dispose();
   });
 
-  test('the sequence keeps advancing while ACKs keep arriving', () async {
+  test('the sequence keeps advancing while arrivals keep arriving', () async {
     final sender = FakeSender();
     final (:tracker, :runner) = build(sender);
 
     await runner.start([1], 3.0);
-    for (var i = 0; i < 6; i++) {
-      ackLast(tracker, sender, 1);
+    ackLast(tracker, sender, 1);            // anchors the figure, sends vertex 0
+    await Future<void>.microtask(() {});
+
+    for (var i = 0; i < 5; i++) {
+      arrive(runner, 1);
       await Future<void>.microtask(() {});
     }
 
     expect(runner.progressFor(1)!.steps, 5);
     expect(runner.progressFor(1)!.phase, DemoPhase.stepping);
     expect(runner.isRunning, isTrue);
+    expect(sender.to(1).whereType<MoveMessage>(), hasLength(6));
+
+    // The figure closes: vertex 0 and vertex 8 are the same point.
+    final moves = sender.to(1).whereType<MoveMessage>().toList();
+    expect(moves.first.target.latitude, closeTo(moves.first.target.latitude, 1e-9));
 
     runner.dispose();
     tracker.dispose();
@@ -150,7 +171,7 @@ void main() {
     final countAfterRth = sender.to(1).length;
     await settle();
 
-    expect(sender.to(1).whereType<NextStepMessage>(), isEmpty);
+    expect(sender.to(1).whereType<MoveMessage>(), isEmpty);
     expect(sender.to(1).length, lessThanOrEqualTo(countAfterRth + 3),
         reason: 'only RTH retries, no new steps');
 
@@ -186,8 +207,10 @@ void main() {
     final (:tracker, :runner) = build(sender, maxSteps: 3);
 
     await runner.start([1], 3.0);
+    ackLast(tracker, sender, 1);
+    await Future<void>.microtask(() {});
     for (var i = 0; i < 5; i++) {
-      ackLast(tracker, sender, 1);
+      arrive(runner, 1);
       await Future<void>.microtask(() {});
       if (runner.progressFor(1)!.phase == DemoPhase.returning) break;
     }
@@ -234,31 +257,34 @@ void main() {
 
     // Operator drives a manual MOVE alongside the running sequence.
     await tracker.send(
-      (q) => MoveMessage(seq: q, direction: MoveDirection.left, distance: 2.0),
+      (q) => MoveMessage(seq: q, target: const LatLng(50.06, 19.91)),
       dest: 1,
     );
     ackLast(tracker, sender, 1);
     await Future<void>.microtask(() {});
 
     expect(sender.to(1).length, count + 1,
-        reason: 'only the MOVE itself, no extra NEXT_STEP');
+        reason: 'the MOVE itself; an ACK is acceptance, not arrival');
 
     runner.dispose();
     tracker.dispose();
   });
 
-  test('each drone advances on its own ACKs', () async {
+  test('each drone advances on its own arrivals', () async {
     final sender = FakeSender();
     final (:tracker, :runner) = build(sender, drones: [1, 2]);
 
     await runner.start([1, 2], 3.0);
 
-    for (var i = 0; i < 3; i++) {
-      ackLast(tracker, sender, 1);
-      await Future<void>.microtask(() {});
-    }
+    // Both anchor, then only drone 1 keeps reporting arrivals.
+    ackLast(tracker, sender, 1);
     ackLast(tracker, sender, 2);
     await Future<void>.microtask(() {});
+
+    for (var i = 0; i < 2; i++) {
+      arrive(runner, 1);
+      await Future<void>.microtask(() {});
+    }
 
     expect(runner.progressFor(1)!.steps, 2);
     expect(runner.progressFor(2)!.steps, 0);

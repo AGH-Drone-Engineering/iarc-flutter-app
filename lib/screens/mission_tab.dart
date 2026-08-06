@@ -7,7 +7,6 @@ import '../services/demo_runner.dart';
 import '../state/app_state.dart';
 import '../widgets/connection_bar.dart';
 import '../widgets/drone_visuals.dart';
-import '../widgets/hold_to_confirm_button.dart';
 import '../widgets/mine_identity.dart';
 import '../widgets/number_stepper.dart';
 import '../widgets/section_card.dart';
@@ -312,6 +311,33 @@ class _MissionStartSection extends StatelessWidget {
             onChanged: app.setDemoAltitude,
           ),
           const SizedBox(height: 8),
+          NumberStepper(
+            label: 'Figure vertices',
+            value: app.demoVertices.toDouble(),
+            min: 3,
+            max: 16,
+            step: 1,
+            unit: '',
+            onChanged: app.setDemoVertices,
+          ),
+          const SizedBox(height: 8),
+          NumberStepper(
+            label: 'Figure radius',
+            value: app.demoRadius,
+            min: 1.0,
+            max: 25.0,
+            step: 0.5,
+            unit: 'm',
+            onChanged: app.setDemoRadius,
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'A ${app.demoVertices}-sided figure of radius '
+            '${app.demoRadius.toStringAsFixed(1)} m, laid around wherever the '
+            'drone reports it is when it accepts START_DEMO.',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+          const SizedBox(height: 8),
           if (app.demo.isRunning)
             FilledButton.icon(
               onPressed: app.stopDemo,
@@ -343,7 +369,7 @@ class _MissionStartSection extends StatelessWidget {
           NumberStepper(
             label: 'Main search altitude',
             value: app.mainAltitude,
-            min: 1.0,
+            min: 0.5,
             max: 30.0,
             step: 0.5,
             unit: 'm',
@@ -401,7 +427,6 @@ class _RecoverySection extends StatelessWidget {
   Widget build(BuildContext context) {
     final app = context.watch<AppState>();
     final enabled = app.isConnected;
-    final scheme = Theme.of(context).colorScheme;
 
     return SectionCard(
       title: 'Recovery',
@@ -438,21 +463,6 @@ class _RecoverySection extends StatelessWidget {
                 icon: const Icon(Icons.refresh),
               ),
             ],
-          ),
-          const SizedBox(height: 20),
-          HoldToConfirmButton(
-            label: 'KILL',
-            holdingLabel: 'Hold to cut motors…',
-            icon: Icons.dangerous,
-            color: scheme.error,
-            onConfirmed: enabled ? () => app.kill() : null,
-          ),
-          const SizedBox(height: 8),
-          Text(
-            'Cuts motors on ${Drone.nameFor(app.selectedTarget)}. '
-            'Sent 3× without waiting for an ACK.',
-            style: Theme.of(context).textTheme.bodySmall,
-            textAlign: TextAlign.center,
           ),
         ],
       ),
