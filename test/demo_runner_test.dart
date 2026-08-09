@@ -56,11 +56,19 @@ void ackLast(CommandTracker tracker, FakeSender sender, int drone,
 void arrive(DemoRunner runner, int drone) =>
     runner.handleEvent(drone, MissionEvent.waypointReached);
 
+/// The drone reporting it is up and holding -- this is what opens the sequence.
+void telem(DemoRunner runner, int drone,
+        [DroneState state = DroneState.hover]) =>
+    runner.handleTelemetry(
+      drone,
+      TelemMessage(seq: 9100, position: _anchor, altitude: 3.0, state: state),
+    );
+
 Future<void> settle([int multiplier = 10]) =>
     Future<void>.delayed(_timeout * multiplier);
 
 void main() {
-  test('the START_DEMO ACK anchors the figure and sends the first vertex', () async {
+  test('the ACK anchors the figure, HOVER sends the first vertex', () async {
     final sender = FakeSender();
     final (:tracker, :runner) = build(sender);
 
@@ -69,6 +77,18 @@ void main() {
     expect(runner.progressFor(1)!.phase, DemoPhase.starting);
 
     ackLast(tracker, sender, 1);
+    await Future<void>.microtask(() {});
+
+    expect(sender.lastTo(1), isA<StartDemoMessage>(),
+        reason: 'the drone is still on the ground; a MOVE now gets BAD_STATE');
+    expect(runner.progressFor(1)!.figure, hasLength(8));
+
+    // Climbing is not ready either -- only HOVER opens the sequence.
+    telem(runner, 1, DroneState.takeoff);
+    await Future<void>.microtask(() {});
+    expect(sender.lastTo(1), isA<StartDemoMessage>());
+
+    telem(runner, 1);
     await Future<void>.microtask(() {});
 
     expect(sender.lastTo(1), isA<MoveMessage>());
@@ -91,7 +111,8 @@ void main() {
     final (:tracker, :runner) = build(sender);
 
     await runner.start([1], 3.0);
-    ackLast(tracker, sender, 1);            // anchors the figure, sends vertex 0
+    ackLast(tracker, sender, 1);            // anchors the figure
+    telem(runner, 1);                       // airborne -> sends vertex 0
     await Future<void>.microtask(() {});
 
     for (var i = 0; i < 5; i++) {
@@ -120,7 +141,10 @@ void main() {
 
     // Drone 1 stays responsive throughout; drone 2 never answers at all.
     final keepAlive = Timer.periodic(const Duration(milliseconds: 5), (_) {
-      if (runner.progressFor(1)?.isActive ?? false) ackLast(tracker, sender, 1);
+      if (runner.progressFor(1)?.isActive ?? false) {
+        ackLast(tracker, sender, 1);
+        telem(runner, 1);
+      }
     });
     await settle();
     keepAlive.cancel();
@@ -185,6 +209,7 @@ void main() {
 
     await runner.start([1], 3.0);
     ackLast(tracker, sender, 1);
+    telem(runner, 1);
     await Future<void>.microtask(() {});
 
     runner.handleEvent(1, MissionEvent.missionDone);
@@ -208,6 +233,7 @@ void main() {
 
     await runner.start([1], 3.0);
     ackLast(tracker, sender, 1);
+    telem(runner, 1);
     await Future<void>.microtask(() {});
     for (var i = 0; i < 5; i++) {
       arrive(runner, 1);
@@ -229,6 +255,7 @@ void main() {
 
     await runner.start([1], 3.0);
     ackLast(tracker, sender, 1);
+    telem(runner, 1);
     await Future<void>.microtask(() {});
 
     runner.stop();
@@ -252,6 +279,7 @@ void main() {
 
     await runner.start([1], 3.0);
     ackLast(tracker, sender, 1);
+    telem(runner, 1);
     await Future<void>.microtask(() {});
     final count = sender.to(1).length;
 
@@ -279,6 +307,8 @@ void main() {
     // Both anchor, then only drone 1 keeps reporting arrivals.
     ackLast(tracker, sender, 1);
     ackLast(tracker, sender, 2);
+    telem(runner, 1);
+    telem(runner, 2);
     await Future<void>.microtask(() {});
 
     for (var i = 0; i < 2; i++) {
