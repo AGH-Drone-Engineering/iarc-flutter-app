@@ -215,7 +215,8 @@ the wire and make every acknowledgement a position fix, which is what lets a
   "alt": 8.2,
   "bat": 14.8,
   "pct": 87,
-  "st": "MAIN"
+  "st": "MAIN",
+  "ts": 412350
 }
 ```
 
@@ -226,6 +227,36 @@ the wire and make every acknowledgement a position fix, which is what lets a
 | `bat`        | float  | Pack voltage, volts. Optional.               |
 | `pct`        | int    | Battery remaining, `0..100`. Optional.       |
 | `st`         | string | See below                                    |
+| `ts`         | int    | Sample time, see below. Optional.            |
+
+#### `ts` — when the position was taken
+
+Milliseconds on the drone's own monotonic clock, recorded when it **read** the
+position from the flight controller — not when the frame was built, and not a
+wall clock.
+
+It is deliberately not calendar time. A Pi in the field has no RTC and no
+network, so its clock is whatever it booted with; in testing the drone and the
+phone have been seven hours apart. Comparing an absolute drone timestamp to
+phone time would produce confident nonsense.
+
+What the ground station can do with it is work out **age**. For each frame,
+`received_at - ts` is the (unknown, constant) clock offset plus however long
+that frame waited on the radio. Queue delay is never negative, so the smallest
+value seen so far is the best estimate of the pure offset; anything above it is
+that frame's transit delay.
+
+This matters because arrival time lies on a polled link: a frame can sit in the
+ESP's queue for seconds, so a position that arrives "just now" may describe
+where the drone was several seconds ago. Any ground-station logic that keeps
+drones apart by position has to be able to tell those cases apart.
+
+A drone that restarts sends `ts` backwards. A drop of more than ~30 s is a
+restart (start the estimate again); anything smaller is an out-of-order frame
+and must still be aged, not discarded.
+
+Adds 12 bytes: a TELEM goes from ~82 to ~94 bytes, against a 248-byte cap and a
+238-byte single-frame limit, so it neither fragments nor costs an extra frame.
 
 | `st`      | Meaning                              |
 | --------- | ------------------------------------ |

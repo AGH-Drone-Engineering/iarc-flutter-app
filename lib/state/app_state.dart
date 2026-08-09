@@ -51,6 +51,8 @@ class AppState extends ChangeNotifier {
   static const _kLinkKey = 'link_config_v1';
   static const _kCornersKey = 'corners_v1';
   static const _kDemoAltKey = 'demo_alt_v1';
+  static const _kLockstepKey = 'demo_lockstep_v1';
+  static const _kClearanceKey = 'demo_clearance_v1';
   static const _kMainAltKey = 'main_alt_v1';
   static const _kVertexKey = 'demo_vertices_v1';
   static const _kRadiusKey = 'demo_radius_v1';
@@ -76,6 +78,8 @@ class AppState extends ChangeNotifier {
   /// absolute coordinates, so changing it needs no drone-side release.
   int get demoVertices => demo.vertexCount;
   double get demoRadius => demo.radiusMeters;
+  bool get demoLockstep => demo.lockstep;
+  double get demoClearance => demo.clearanceMeters;
 
   /// Language the speech recogniser listens in, `pl` or `en`. The parser takes
   /// both regardless -- this only picks the acoustic model, which the engine
@@ -326,6 +330,8 @@ class AppState extends ChangeNotifier {
     demoAltitude = p.getDouble(_kDemoAltKey) ?? 3.0;
     demo.vertexCount = p.getInt(_kVertexKey) ?? 8;
     demo.radiusMeters = p.getDouble(_kRadiusKey) ?? 5.0;
+    demo.lockstep = p.getBool(_kLockstepKey) ?? true;
+    demo.clearanceMeters = p.getDouble(_kClearanceKey) ?? 4.0;
     mainAltitude = p.getDouble(_kMainAltKey) ?? 8.0;
     voiceLocale = p.getString(_kVoiceLocaleKey) ?? 'pl';
     notifyListeners();
@@ -349,6 +355,25 @@ class AppState extends ChangeNotifier {
     demo.radiusMeters = demoRadiusRange.clamp(v);
     notifyListeners();
     (await _ensurePrefs()).setDouble(_kRadiusKey, demo.radiusMeters);
+  }
+
+  /// Lockstep or off-step. Refused mid-demo: the two modes disagree about what
+  /// keeps the drones apart, and swapping while they fly would leave the run
+  /// half-governed by each.
+  Future<void> setDemoLockstep(bool v) async {
+    if (demo.isRunning) {
+      logWarn('Cannot change formation mode while the demo is running', _tag);
+      return;
+    }
+    demo.lockstep = v;
+    notifyListeners();
+    (await _ensurePrefs()).setBool(_kLockstepKey, v);
+  }
+
+  Future<void> setDemoClearance(double v) async {
+    demo.clearanceMeters = demoClearanceRange.clamp(v);
+    notifyListeners();
+    (await _ensurePrefs()).setDouble(_kClearanceKey, demo.clearanceMeters);
   }
 
   Future<void> setMainAltitude(double v) async {

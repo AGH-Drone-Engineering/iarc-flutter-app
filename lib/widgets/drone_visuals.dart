@@ -33,7 +33,8 @@ Color droneStateColor(Drone drone, ColorScheme scheme, {AckFailure? failure}) {
 IconData demoPhaseIcon(DemoPhase phase) => switch (phase) {
       DemoPhase.starting => Icons.flight_takeoff,
       DemoPhase.stepping => Icons.directions_run,
-      DemoPhase.returning => Icons.home,
+      DemoPhase.holding => Icons.pause_presentation,
+      DemoPhase.landing => Icons.flight_land,
       DemoPhase.finished => Icons.check_circle,
       DemoPhase.stopped => Icons.pause_circle,
     };
@@ -41,13 +42,14 @@ IconData demoPhaseIcon(DemoPhase phase) => switch (phase) {
 String demoPhaseLabel(DemoPhase phase) => switch (phase) {
       DemoPhase.starting => 'taking off',
       DemoPhase.stepping => 'running',
-      DemoPhase.returning => 'returning home',
+      DemoPhase.holding => 'holding for formation',
+      DemoPhase.landing => 'landing in place',
       DemoPhase.finished => 'finished',
       DemoPhase.stopped => 'stopped',
     };
 
 Color demoPhaseColor(DemoPhase phase, ColorScheme scheme) => switch (phase) {
-      DemoPhase.returning => scheme.error,
+      DemoPhase.landing => scheme.error,
       DemoPhase.finished => Colors.green,
       DemoPhase.stopped => scheme.outline,
       _ => scheme.primary,

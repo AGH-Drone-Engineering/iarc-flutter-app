@@ -165,6 +165,7 @@ sealed class MissionMessage {
           battery: _optionalDouble(parsed, 'bat'),
           batteryPercent: _optionalDouble(parsed, 'pct')?.round(),
           state: DroneState.fromWire(_string(parsed, 'st')),
+          sampleMs: _optionalDouble(parsed, 'ts')?.round(),
         ),
       'MINE' => MineMessage(
           seq: seq,
@@ -337,6 +338,16 @@ class TelemMessage extends MissionMessage {
 
   final DroneState state;
 
+  /// When the drone READ this position, in milliseconds on its own monotonic
+  /// clock (`ts` on the wire). Null from a drone that predates the field.
+  ///
+  /// Not a wall clock and not comparable to ours -- the drone has no RTC and no
+  /// network, so its calendar time is whatever it booted with. What it is good
+  /// for is age: paired with our receive time it separates "this fix is fresh"
+  /// from "this frame sat in the radio queue for four seconds", which arrival
+  /// time alone cannot tell you. See DroneClock.
+  final int? sampleMs;
+
   const TelemMessage({
     required super.seq,
     required this.position,
@@ -344,6 +355,7 @@ class TelemMessage extends MissionMessage {
     required this.state,
     this.battery,
     this.batteryPercent,
+    this.sampleMs,
   });
 
   @override
@@ -356,6 +368,7 @@ class TelemMessage extends MissionMessage {
         if (battery != null) 'bat': _round(battery!, 2),
         if (batteryPercent != null) 'pct': batteryPercent,
         'st': state.wire,
+        if (sampleMs != null) 'ts': sampleMs,
       };
 }
 

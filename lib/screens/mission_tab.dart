@@ -338,6 +338,45 @@ class _MissionStartSection extends StatelessWidget {
             'drone reports it is when it accepts START_DEMO.',
             style: Theme.of(context).textTheme.bodySmall,
           ),
+          const Divider(height: 24),
+          SwitchListTile.adaptive(
+            contentPadding: EdgeInsets.zero,
+            dense: true,
+            title: const Text('Lockstep formation'),
+            subtitle: Text(
+              app.demoLockstep
+                  ? 'Every drone holds its vertex until the whole formation has '
+                      'arrived. Separation stays equal to the spacing between '
+                      'their takeoff points.'
+                  : 'Each drone advances on its own. The phone predicts where '
+                      'they will be and holds back any step that would break '
+                      'clearance.',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            value: app.demoLockstep,
+            onChanged: app.demo.isRunning
+                ? null
+                : (v) => app.setDemoLockstep(v),
+          ),
+          if (!app.demoLockstep) ...[
+            const SizedBox(height: 4),
+            NumberStepper(
+              label: 'Clearance',
+              value: app.demoClearance,
+              min: demoClearanceRange.min,
+              max: demoClearanceRange.max,
+              step: demoClearanceRange.step,
+              unit: 'm',
+              onChanged: app.setDemoClearance,
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Closest two drones may be predicted to come. The drones do not '
+              'report GPS accuracy, so this number has to cover fix error, the '
+              'airframe and tracking slop — set it larger than you think.',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ],
           const SizedBox(height: 8),
           if (app.demo.isRunning)
             FilledButton.icon(
