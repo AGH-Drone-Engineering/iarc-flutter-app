@@ -15,6 +15,7 @@ import '../services/global_log.dart';
 import '../services/lora_link_service.dart';
 import '../services/udp_link_service.dart';
 import '../services/mission_transport.dart';
+import 'mission_limits.dart';
 
 const _tag = 'app';
 
@@ -49,6 +50,7 @@ class AppState extends ChangeNotifier {
   static const _kMainAltKey = 'main_alt_v1';
   static const _kVertexKey = 'demo_vertices_v1';
   static const _kRadiusKey = 'demo_radius_v1';
+  static const _kVoiceLocaleKey = 'voice_locale_v1';
 
   SharedPreferences? _prefs;
   Future<SharedPreferences> _ensurePrefs() async =>
@@ -70,6 +72,11 @@ class AppState extends ChangeNotifier {
   /// absolute coordinates, so changing it needs no drone-side release.
   int get demoVertices => demo.vertexCount;
   double get demoRadius => demo.radiusMeters;
+
+  /// Language the speech recogniser listens in, `pl` or `en`. The parser takes
+  /// both regardless -- this only picks the acoustic model, which the engine
+  /// will not switch on its own mid-sentence.
+  String voiceLocale = 'pl';
 
   String connectionStatus = 'No device connected';
   LatLng? userLocation;
@@ -284,31 +291,41 @@ class AppState extends ChangeNotifier {
     demo.vertexCount = p.getInt(_kVertexKey) ?? 8;
     demo.radiusMeters = p.getDouble(_kRadiusKey) ?? 5.0;
     mainAltitude = p.getDouble(_kMainAltKey) ?? 8.0;
+    voiceLocale = p.getString(_kVoiceLocaleKey) ?? 'pl';
     notifyListeners();
   }
 
+  /// The setters clamp because they are also the voice parser's way in, and a
+  /// spoken number arrives without the stepper's end stops.
   Future<void> setDemoAltitude(double v) async {
-    demoAltitude = v;
+    demoAltitude = demoAltitudeRange.clamp(v);
     notifyListeners();
-    (await _ensurePrefs()).setDouble(_kDemoAltKey, v);
+    (await _ensurePrefs()).setDouble(_kDemoAltKey, demoAltitude);
   }
 
   Future<void> setDemoVertices(double v) async {
-    demo.vertexCount = v.round();
+    demo.vertexCount = demoVerticesRange.clamp(v).round();
     notifyListeners();
     (await _ensurePrefs()).setInt(_kVertexKey, demo.vertexCount);
   }
 
   Future<void> setDemoRadius(double v) async {
-    demo.radiusMeters = v;
+    demo.radiusMeters = demoRadiusRange.clamp(v);
     notifyListeners();
-    (await _ensurePrefs()).setDouble(_kRadiusKey, v);
+    (await _ensurePrefs()).setDouble(_kRadiusKey, demo.radiusMeters);
   }
 
   Future<void> setMainAltitude(double v) async {
-    mainAltitude = v;
+    mainAltitude = mainAltitudeRange.clamp(v);
     notifyListeners();
-    (await _ensurePrefs()).setDouble(_kMainAltKey, v);
+    (await _ensurePrefs()).setDouble(_kMainAltKey, mainAltitude);
+  }
+
+  Future<void> setVoiceLocale(String v) async {
+    if (voiceLocale == v) return;
+    voiceLocale = v;
+    notifyListeners();
+    (await _ensurePrefs()).setString(_kVoiceLocaleKey, v);
   }
 
 

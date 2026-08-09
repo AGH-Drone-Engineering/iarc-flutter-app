@@ -5,6 +5,7 @@ import '../models/drone.dart';
 import '../models/mission_message.dart';
 import '../services/demo_runner.dart';
 import '../state/app_state.dart';
+import '../state/mission_limits.dart';
 import '../widgets/connection_bar.dart';
 import '../widgets/drone_visuals.dart';
 import '../widgets/mine_identity.dart';
@@ -304,9 +305,9 @@ class _MissionStartSection extends StatelessWidget {
           NumberStepper(
             label: 'Demo hover altitude',
             value: app.demoAltitude,
-            min: 0.5,
-            max: 30.0,
-            step: 0.5,
+            min: demoAltitudeRange.min,
+            max: demoAltitudeRange.max,
+            step: demoAltitudeRange.step,
             unit: 'm',
             onChanged: app.setDemoAltitude,
           ),
@@ -314,9 +315,9 @@ class _MissionStartSection extends StatelessWidget {
           NumberStepper(
             label: 'Figure vertices',
             value: app.demoVertices.toDouble(),
-            min: 3,
-            max: 16,
-            step: 1,
+            min: demoVerticesRange.min,
+            max: demoVerticesRange.max,
+            step: demoVerticesRange.step,
             unit: '',
             onChanged: app.setDemoVertices,
           ),
@@ -324,9 +325,9 @@ class _MissionStartSection extends StatelessWidget {
           NumberStepper(
             label: 'Figure radius',
             value: app.demoRadius,
-            min: 1.0,
-            max: 25.0,
-            step: 0.5,
+            min: demoRadiusRange.min,
+            max: demoRadiusRange.max,
+            step: demoRadiusRange.step,
             unit: 'm',
             onChanged: app.setDemoRadius,
           ),
@@ -369,9 +370,9 @@ class _MissionStartSection extends StatelessWidget {
           NumberStepper(
             label: 'Main search altitude',
             value: app.mainAltitude,
-            min: 0.5,
-            max: 30.0,
-            step: 0.5,
+            min: mainAltitudeRange.min,
+            max: mainAltitudeRange.max,
+            step: mainAltitudeRange.step,
             unit: 'm',
             onChanged: app.setMainAltitude,
           ),

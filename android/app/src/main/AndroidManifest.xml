@@ -59,6 +59,15 @@
         <intent>
             <action android:name="android.hardware.usb.action.USB_DEVICE_DETACHED" />
         </intent>
+        <!-- Without these, package visibility on Android 11+ hides the speech
+             recogniser: isRecognitionAvailable() returns false, initialize()
+             fails and the voice button stays greyed out with no explanation. -->
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
+        </intent>
+        <intent>
+            <action android:name="android.speech.action.RECOGNIZE_SPEECH" />
+        </intent>
     </queries>
 
 </manifest>
