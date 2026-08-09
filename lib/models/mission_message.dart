@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:latlong2/latlong.dart';
@@ -166,6 +167,7 @@ sealed class MissionMessage {
           batteryPercent: _optionalDouble(parsed, 'pct')?.round(),
           state: DroneState.fromWire(_string(parsed, 'st')),
           sampleMs: _optionalDouble(parsed, 'ts')?.round(),
+          velocity: _optionalVelocity(parsed),
         ),
       'MINE' => MineMessage(
           seq: seq,
@@ -338,6 +340,20 @@ class TelemMessage extends MissionMessage {
 
   final DroneState state;
 
+  /// Ground velocity as (north, east) in m/s, straight from the drone's EKF.
+  ///
+  /// Worth more than it looks. The ground station would otherwise have to infer
+  /// motion by differencing 1 Hz positions, which is noisy, a sample behind, and
+  /// cannot tell a drone flying its leg from one drifting off it. This is the
+  /// same estimate the autopilot navigates on — and with optical flow fused into
+  /// it (`EK3_SRC1_VELXY = 5`), it is the sharpest number the vehicle produces.
+  final ({double north, double east})? velocity;
+
+  /// Speed over the ground in m/s, or null when the drone did not report it.
+  double? get groundSpeed => velocity == null
+      ? null
+      : sqrt(velocity!.north * velocity!.north + velocity!.east * velocity!.east);
+
   /// When the drone READ this position, in milliseconds on its own monotonic
   /// clock (`ts` on the wire). Null from a drone that predates the field.
   ///
@@ -356,6 +372,7 @@ class TelemMessage extends MissionMessage {
     this.battery,
     this.batteryPercent,
     this.sampleMs,
+    this.velocity,
   });
 
   @override
@@ -368,6 +385,8 @@ class TelemMessage extends MissionMessage {
         if (battery != null) 'bat': _round(battery!, 2),
         if (batteryPercent != null) 'pct': batteryPercent,
         'st': state.wire,
+        if (velocity != null)
+          'vel': [_round(velocity!.north, 2), _round(velocity!.east, 2)],
         if (sampleMs != null) 'ts': sampleMs,
       };
 }
@@ -525,6 +544,14 @@ LatLng _latLonPair(Map<String, Object?> json, String key) {
     throw MissionMessageException('Field "$key" must be a [lat,lon] pair');
   }
   return LatLng((v[0] as num).toDouble(), (v[1] as num).toDouble());
+}
+
+({double north, double east})? _optionalVelocity(Map<String, Object?> parsed) {
+  final raw = parsed['vel'];
+  if (raw is! List || raw.length < 2) return null;
+  final north = raw[0], east = raw[1];
+  if (north is! num || east is! num) return null;
+  return (north: north.toDouble(), east: east.toDouble());
 }
 
 class SeqCounter {

@@ -46,7 +46,19 @@ class AppState extends ChangeNotifier {
   late LinkConfig config;
 
   MissionTransport get transport =>
-      config.transport == TransportKind.udp ? udp : lora;
+      _testTransport ?? (config.transport == TransportKind.udp ? udp : lora);
+
+  MissionTransport? _testTransport;
+
+  /// Stand a fake link in for the real ones, and listen to it.
+  ///
+  /// The uplink-ACK contract is about what the app puts back on the wire, which
+  /// is otherwise only observable through a USB serial port or a socket.
+  @visibleForTesting
+  void useTransportForTest(MissionTransport t) {
+    _testTransport = t;
+    _subs.add(t.missionStream.listen(_onMission));
+  }
 
   static const _kLinkKey = 'link_config_v1';
   static const _kCornersKey = 'corners_v1';
@@ -72,7 +84,7 @@ class AppState extends ChangeNotifier {
   final List<ScanRegion> scans = [];
 
   double demoAltitude = 3.0;
-  double mainAltitude = 8.0;
+  double mainAltitude = 2.0;
 
   /// Shape of the demo figure. Lives here, not on the drone: MOVE carries
   /// absolute coordinates, so changing it needs no drone-side release.
@@ -213,8 +225,11 @@ class AppState extends ChangeNotifier {
             'alt=${t.altitude} bat=${t.battery ?? "-"} '
             'pos=${t.position.latitude},${t.position.longitude}');
       case MineMessage m:
-        _recordMine(incoming.from, m);
+        if (_acknowledgeReport(incoming.from, m.seq, 'MINE')) {
+          _recordMine(incoming.from, m);
+        }
       case ScanMessage s:
+        if (!_acknowledgeReport(incoming.from, s.seq, 'SCAN')) break;
         scans.add(ScanRegion(s.cornerA, s.cornerB));
         logInfo(
           'Scan region from ${Drone.nameFor(incoming.from)}: '
@@ -237,6 +252,43 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  final Set<String> _reportsSeen = {};
+  final List<String> _reportOrder = [];
+
+  /// Ile potwierdzonych raportów pamiętamy, żeby rozpoznać powtórkę.
+  ///
+  /// Dron powtarza MINE/SCAN aż do potwierdzenia, więc zgubione ACK wraca do
+  /// nas jako ta sama wiadomość z tym samym `q`. Pamięć jest ograniczona, bo
+  /// SCAN leci raz na klatkę; gdyby powtórka przyszła po wypadnięciu z pamięci,
+  /// minę i tak wyłapie scalanie po znaczniku i pozycji, a powtórzony SCAN jest
+  /// nieszkodliwy (to ten sam prostokąt).
+  static const int _reportMemory = 1024;
+
+  /// Potwierdza raport drona i mówi, czy widzimy go PIERWSZY raz.
+  ///
+  /// ACK wychodzi zawsze, także dla powtórki: skoro dron pyta ponownie, to
+  /// znaczy, że poprzedniego potwierdzenia nie dostał. Zapisujemy natomiast
+  /// tylko za pierwszym razem - inaczej jedna mina zgłoszona trzy razy byłaby
+  /// trzema minami.
+  bool _acknowledgeReport(int from, int seq, String kind) {
+    unawaited(transport.sendMission(
+      from,
+      AckMessage(seq: tracker.nextSeq(), respondingTo: seq),
+    ));
+
+    final key = '$from/$seq';
+    if (!_reportsSeen.add(key)) {
+      logTrace(_tag, 'powtórka $kind q=$seq od ${Drone.nameFor(from)} - '
+          'potwierdzam ponownie, nie zapisuję');
+      return false;
+    }
+    _reportOrder.add(key);
+    if (_reportOrder.length > _reportMemory) {
+      _reportsSeen.remove(_reportOrder.removeAt(0));
+    }
+    return true;
+  }
+
   /// Dwa zgłoszenia to ta sama mina tylko przy zgodnym znaczniku *i* pozycji.
   ///
   /// Próg jest rzędu błędu GPS. Powyżej niego ten sam znacznik w dwóch
@@ -245,7 +297,12 @@ class AppState extends ChangeNotifier {
   /// niż pokazanie obu. Odwrotny przypadek, dwa różne znaczniki w tym samym
   /// miejscu, też daje dwie miny -- tu nie ma żadnego scalania.
   static const double _mineDedupeMeters = 3.0;
-  static const Distance _distance = Distance();
+
+  /// `roundResult` domyślnie TRUE w latlong2 - bez tego każdy dystans jest
+  /// zaokrąglany do pełnych metrów, a próg scalania ma tu 3 m. Dwie miny 3.4 m
+  /// od siebie wyszłyby jako 3 m i zostałyby uznane za jedną: dokładnie ta
+  /// strata, przed którą ostrzega komentarz wyżej.
+  static const Distance _distance = Distance(roundResult: false);
 
   int _nextMineId = 1;
 
@@ -332,7 +389,7 @@ class AppState extends ChangeNotifier {
     demo.radiusMeters = p.getDouble(_kRadiusKey) ?? 5.0;
     demo.lockstep = p.getBool(_kLockstepKey) ?? true;
     demo.clearanceMeters = p.getDouble(_kClearanceKey) ?? 4.0;
-    mainAltitude = p.getDouble(_kMainAltKey) ?? 8.0;
+    mainAltitude = p.getDouble(_kMainAltKey) ?? 2.0;
     voiceLocale = p.getString(_kVoiceLocaleKey) ?? 'pl';
     notifyListeners();
   }

@@ -91,6 +91,11 @@ class CommandTracker extends ChangeNotifier {
   bool isAwaitingAck(int droneId) =>
       _groups.values.any((g) => g.awaiting.contains(droneId));
 
+  /// A sequence number for a phone-originated message that is not a command --
+  /// today, the ACKs the ground station owes for MINE and SCAN. Shares the
+  /// command counter so every phone→drone message has a distinct `q`.
+  int nextSeq() => _seq.take();
+
   Future<void> send(
     MissionMessage Function(int seq) build, {
     required int dest,

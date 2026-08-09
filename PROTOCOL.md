@@ -216,6 +216,7 @@ the wire and make every acknowledgement a position fix, which is what lets a
   "bat": 14.8,
   "pct": 87,
   "st": "MAIN",
+  "vel": [1.23, -0.45],
   "ts": 412350
 }
 ```
@@ -227,7 +228,24 @@ the wire and make every acknowledgement a position fix, which is what lets a
 | `bat`        | float  | Pack voltage, volts. Optional.               |
 | `pct`        | int    | Battery remaining, `0..100`. Optional.       |
 | `st`         | string | See below                                    |
+| `vel`        | float[2] | Ground velocity `[north, east]`, m/s. Optional. |
 | `ts`         | int    | Sample time, see below. Optional.            |
+
+#### `vel` — ground velocity
+
+The EKF's own velocity estimate, north/east in m/s, taken from the same
+`GLOBAL_POSITION_INT` as the position — so it costs the drone nothing to read
+and 21 bytes to send.
+
+It is there so the ground station does not have to infer motion by differencing
+1 Hz positions, which is half a sample behind, noisy at the scale of GPS jitter,
+and reads zero whenever two fixes land on the same spot. Anything predicting
+where drones will be — collision checks, arrival detection — should prefer it.
+
+On an airframe with optical flow fused (`EK3_SRC1_VELXY = 5`) this is the most
+accurate number the vehicle produces, good to a few cm/s. Note that flow
+improves *velocity* and short-term drift; absolute latitude and longitude stay
+GPS-anchored, so `vel` being excellent does not mean the position is.
 
 #### `ts` — when the position was taken
 
@@ -356,6 +374,30 @@ across unverified ground.
 5. After the final expiry the command is reported to the operator as unacknowledged.
 
 Broadcast commands are tracked per drone: each drone ACKs individually.
+
+### Report ACK (`MINE`, `SCAN`)
+
+The mission's output travels the other way, and it is not repeated by anything.
+`TELEM` can be lost harmlessly because another one follows a second later, but a
+lost `MINE` is a mine nobody ever hears about again, and a lost `SCAN` is ground
+the planner must keep treating as unsearched. So these two are acknowledged in
+the reverse direction:
+
+1. The drone sends `MINE` / `SCAN` with a unique `q` and keeps it queued.
+2. The ground station MUST reply `ACK` with `re` = that `q`. It is an
+   acknowledgement of *receipt*, not of anything the operator did with it.
+3. The drone resends until acknowledged, backing off 2.5 s → 5 → 10 → 20 → 30 s
+   and then every 30 s. There is no attempt limit: an unreported mine is worse
+   than a busy radio.
+4. Retries reuse the original `q`, so the ground station can tell a repeat from
+   a second report.
+5. The ground station MUST answer a repeat with a fresh `ACK` — if it stays
+   silent because it already recorded that report, the drone retries for ever —
+   and MUST NOT record it twice.
+6. Nothing else is acknowledged this way. `TELEM` and `EVT` stay fire-and-forget.
+
+A drone that cannot deliver a report keeps it across the rest of the flight; the
+queue is bounded, and on overflow `SCAN` is dropped before `MINE`.
 
 ### Polling (LoRaCom only)
 

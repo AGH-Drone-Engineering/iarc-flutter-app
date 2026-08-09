@@ -165,7 +165,9 @@ class DemoRunner extends ChangeNotifier {
   double? _lockedRadius;
   bool _lockedLockstep = true;
 
-  static const _distance = Distance();
+  // roundResult defaults to TRUE in latlong2, which quantises every distance
+  // to whole metres -- useless when the tolerances here are 2 m wide.
+  static const _distance = Distance(roundResult: false);
 
   /// How close to the commanded vertex counts as standing on it.
   ///
@@ -298,7 +300,8 @@ class DemoRunner extends ChangeNotifier {
       return;
     }
     _lastFix[droneId] = now;
-    _conflicts.observe(droneId, telemetry.position, now, sampleAge: age);
+    _conflicts.observe(droneId, telemetry.position, now,
+        sampleAge: age, reportedSpeed: telemetry.groundSpeed);
 
     if (_isGrounded(telemetry.state)) {
       _landInPlace(droneId, 'reported ${telemetry.state.wire} mid-formation');

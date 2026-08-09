@@ -37,6 +37,8 @@ final _anchors = {1: _anchorA, 2: _anchorB};
   Duration barrierTimeout = const Duration(seconds: 30),
   Duration telemetryTimeout = const Duration(seconds: 30),
   Duration watchdogPeriod = const Duration(milliseconds: 15),
+  bool lockstep = true,
+  double clearanceMeters = 4.0,
 }) {
   final tracker = CommandTracker(
     sender: sender.call,
@@ -49,6 +51,8 @@ final _anchors = {1: _anchorA, 2: _anchorB};
     runner: DemoRunner(
       tracker: tracker,
       maxSteps: maxSteps,
+      lockstep: lockstep,
+      clearanceMeters: clearanceMeters,
       barrierTimeout: barrierTimeout,
       telemetryTimeout: telemetryTimeout,
       watchdogPeriod: watchdogPeriod,
@@ -91,6 +95,10 @@ void flyTo(DemoRunner runner, int drone, LatLng vertex) {
   telem(runner, drone, DroneState.hover, vertex);
 }
 
+/// Point [n] metres north and [e] metres east of [from].
+LatLng ne(LatLng from, double n, double e) =>
+    offsetLatLng(offsetLatLng(from, 0, n), 90, e);
+
 /// Take off and reach the opening barrier.
 void becomeAirborne(DemoRunner runner, int drone) {
   telem(runner, drone, DroneState.takeoff, _anchors[drone]!);
@@ -105,9 +113,14 @@ Future<({CommandTracker tracker, DemoRunner runner})> launched(
   FakeSender sender, {
   Duration barrierTimeout = const Duration(seconds: 30),
   Duration telemetryTimeout = const Duration(seconds: 30),
+  bool lockstep = true,
+  double clearanceMeters = 4.0,
 }) async {
   final built = build(sender,
-      barrierTimeout: barrierTimeout, telemetryTimeout: telemetryTimeout);
+      barrierTimeout: barrierTimeout,
+      telemetryTimeout: telemetryTimeout,
+      lockstep: lockstep,
+      clearanceMeters: clearanceMeters);
   await built.runner.start([1, 2], 3.0);
   ackLast(built.tracker, sender, 1);
   ackLast(built.tracker, sender, 2);
@@ -344,6 +357,134 @@ void main() {
         reason: 'the reachable drones must come down too');
     expect(runner.progressFor(1)!.phase, DemoPhase.landing);
     expect(runner.isRunning, isFalse);
+
+    runner.dispose();
+    tracker.dispose();
+  });
+
+  test('off-step: a drone advances without waiting for the others', () async {
+    final sender = FakeSender();
+    // Anchors are 8 m apart and the figures are radius 5, so a drone on its own
+    // vertex is well clear of the other's -- there is nothing to hold it back.
+    final (:tracker, :runner) =
+        await launched(sender, lockstep: false, clearanceMeters: 1.0);
+    final figureA = runner.progressFor(1)!.figure;
+
+    flyTo(runner, 1, figureA[0]);
+    await pump();
+
+    expect(runner.progressFor(1)!.steps, 1,
+        reason: 'off-step, drone 1 does not wait for drone 2');
+    expect(sender.movesTo(1), hasLength(2));
+    expect(sender.movesTo(2), hasLength(1), reason: 'drone 2 has not arrived');
+    expect(runner.progressFor(2)!.phase, DemoPhase.stepping);
+
+    runner.dispose();
+    tracker.dispose();
+  });
+
+  test('off-step: a step that would break clearance is held, not sent', () async {
+    final sender = FakeSender();
+    // The anchors are 8 m apart, so drone 1's vertex 1 sits ~4.7 m from drone
+    // 2's vertex 0 -- the two figures really do overlap. With 5 m of clearance
+    // that step is not allowed while drone 2 is sitting there.
+    final (:tracker, :runner) =
+        await launched(sender, lockstep: false, clearanceMeters: 5.0);
+    final figureA = runner.progressFor(1)!.figure;
+    final figureB = runner.progressFor(2)!.figure;
+    ackLast(tracker, sender, 1);
+    ackLast(tracker, sender, 2);
+
+    expect(const Distance(roundResult: false)(figureA[1], figureB[0]),
+        lessThan(5.0),
+        reason: 'the fixture must actually be a conflict');
+
+    // Drone 2 is parked on its vertex 0 and stays there; drone 1 arrives and
+    // wants vertex 1, which is right on top of it.
+    telem(runner, 2, DroneState.demo, figureB[0]);
+    flyTo(runner, 1, figureA[0]);
+    await pump();
+
+    expect(runner.progressFor(1)!.phase, DemoPhase.holding);
+    expect(runner.progressFor(1)!.steps, 0, reason: 'the step was not taken');
+    expect(sender.movesTo(1), hasLength(1));
+    expect(runner.progressFor(1)!.detail, contains('would close on drone 2'));
+    expect(sender.to(1).whereType<LandMessage>(), isEmpty,
+        reason: 'holding on its own vertex is safe; landing would be an escalation');
+
+    runner.dispose();
+    tracker.dispose();
+  });
+
+  test('off-step: a drone held too long by traffic is landed', () async {
+    final sender = FakeSender();
+    final (:tracker, :runner) = await launched(sender,
+        lockstep: false,
+        clearanceMeters: 5.0,
+        barrierTimeout: const Duration(milliseconds: 100));
+    final figureA = runner.progressFor(1)!.figure;
+    final figureB = runner.progressFor(2)!.figure;
+    ackLast(tracker, sender, 1);
+    ackLast(tracker, sender, 2);
+
+    flyTo(runner, 1, figureA[0]);
+    await pump();
+    expect(runner.progressFor(1)!.phase, DemoPhase.holding);
+
+    // Drone 2 never leaves the vertex that is in the way, so the block never
+    // clears. Hovering for ever is not an answer either.
+    for (var i = 0; i < 8; i++) {
+      telem(runner, 2, DroneState.demo, figureB[0]);
+      await settle(30);
+    }
+
+    expect(runner.progressFor(1)!.phase, DemoPhase.landing);
+    expect(runner.progressFor(1)!.detail, contains('waiting for a clear step'));
+
+    runner.dispose();
+    tracker.dispose();
+  });
+
+  test('off-step: a converging pair is landed, both of them', () async {
+    final sender = FakeSender();
+    final (:tracker, :runner) =
+        await launched(sender, lockstep: false, clearanceMeters: 4.0);
+
+    // Both are still plausibly flying their own leg -- neither is far enough
+    // off its vertex to trip the on-course check -- but they are closing on the
+    // same piece of air. Nothing about which one is at fault is knowable from
+    // two 1 Hz position streams.
+    telem(runner, 1, DroneState.demo, ne(_anchorA, 5, 2));
+    telem(runner, 2, DroneState.demo, ne(_anchorA, 5, 6));
+    telem(runner, 1, DroneState.demo, ne(_anchorA, 5, 4));
+    telem(runner, 2, DroneState.demo, ne(_anchorA, 5, 4));
+    await settle(120);
+
+    expect(runner.progressFor(1)!.phase, DemoPhase.landing);
+    expect(runner.progressFor(2)!.phase, DemoPhase.landing);
+    expect(runner.progressFor(1)!.detail, contains('clearance'));
+    expect(sender.to(1).whereType<RthMessage>(), isEmpty);
+
+    runner.dispose();
+    tracker.dispose();
+  });
+
+  test('lockstep ignores clearance entirely - geometry is the guarantee', () async {
+    final sender = FakeSender();
+    // Same absurd clearance as the held test, but in lockstep it must not
+    // interfere: separation there is the anchor spacing, by construction.
+    final (:tracker, :runner) =
+        await launched(sender, lockstep: true, clearanceMeters: 40.0);
+    final figureA = runner.progressFor(1)!.figure;
+    final figureB = runner.progressFor(2)!.figure;
+
+    flyTo(runner, 1, figureA[0]);
+    flyTo(runner, 2, figureB[0]);
+    await pump();
+
+    expect(runner.progressFor(1)!.steps, 1);
+    expect(runner.progressFor(2)!.steps, 1);
+    expect(sender.to(1).whereType<LandMessage>(), isEmpty);
 
     runner.dispose();
     tracker.dispose();

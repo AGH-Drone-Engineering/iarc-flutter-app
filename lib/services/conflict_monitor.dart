@@ -10,20 +10,30 @@ import 'package:latlong2/latlong.dart';
 ///
 /// ## Why a clearance number and not a computed accuracy
 ///
-/// Nothing on the wire says how good a fix is. TELEM carries lat/lon/alt/state
-/// and nothing else — the drone reads `eph` and satellite count from MAVLink and
-/// gates arming on them, but never reports them. So the phone cannot derive a
-/// position error, and pretending otherwise would be inventing a number. The
-/// operator sets [clearanceMeters] instead: the separation they want kept,
-/// covering GPS error, airframe size and how sloppily the drone tracks a line.
+/// Nothing on the wire says how good a *fix* is. TELEM carries position, state,
+/// velocity and a sample time, but no accuracy: the drone reads `eph`/`h_acc`
+/// and satellite count from MAVLink and gates arming on them, then keeps them to
+/// itself. So the phone cannot derive a position error, and pretending otherwise
+/// would be inventing a number. The operator sets [clearanceMeters] instead: the
+/// separation they want kept, covering GPS error, airframe size and how sloppily
+/// the drone tracks a line.
+///
+/// Note that optical flow does not change this. Flow constrains *velocity* and
+/// short-term drift; the absolute latitude and longitude stay GPS-anchored. It
+/// makes the drone fly its leg more precisely and makes [observe]'s speed
+/// trustworthy — it does not let clearance shrink.
 ///
 /// ## What it does compute
 ///
 /// Two things it *can* know are used to inflate that number honestly:
 ///
-///  * **Speed**, from consecutive fixes. With `ts` on TELEM the elapsed time
-///    between two samples is the drone's own measurement, not our arrival times,
-///    so a queued frame does not turn into a phantom acceleration.
+///  * **Speed**, reported by the drone's own EKF (`vel` on TELEM) when it is
+///    available, and inferred from consecutive fixes only when it is not. The
+///    reported one is worth having: it is the estimate the autopilot navigates
+///    on, it is current rather than half a sample behind, and with optical flow
+///    fused into it (`EK3_SRC1_VELXY = 5`) it is accurate to a few cm/s. An
+///    inferred speed is carried with an extra margin, because it can be wrong
+///    in the direction that hides a conflict.
 ///  * **Staleness**. A fix that is one second old, from a drone doing 2 m/s, has
 ///    the drone anywhere in a 2 m circle. That radius is added to the required
 ///    separation rather than hoped away.
@@ -49,7 +59,10 @@ class ConflictMonitor {
 
   final int stepCount;
 
-  static const _distance = Distance();
+  // roundResult defaults to TRUE in latlong2: without this every separation
+  // is quantised to whole metres, and a clearance check works in exactly the
+  // range where that matters.
+  static const _distance = Distance(roundResult: false);
 
   /// Speed we assume when we have no measurement yet -- a drone that has only
   /// just been heard from could already be moving.
@@ -57,16 +70,27 @@ class ConflictMonitor {
 
   final Map<int, _Track> _tracks = {};
 
-  /// Record where a drone is and when it sampled that.
+  /// Record where a drone is, how fast it says it is going, and when it sampled
+  /// that.
+  ///
+  /// [reportedSpeed] is the drone's own ground speed in m/s, from the EKF. Use
+  /// it when it is there: differencing two 1 Hz positions gives a number that is
+  /// half a sample behind, noisy at the scale of GPS jitter, and floored at zero
+  /// when two fixes happen to land on the same spot. The vehicle's own estimate
+  /// has none of those problems — and with optical flow fused into it, it is
+  /// good to a few cm/s.
   ///
   /// [sampleAge] is how old the fix was on arrival (from DroneClock); pass null
   /// when unknown, and it is treated as fresh — staleness is then somebody
   /// else's problem, not silently folded in as safety margin here.
-  void observe(int droneId, LatLng position, DateTime at, {Duration? sampleAge}) {
+  void observe(int droneId, LatLng position, DateTime at,
+      {Duration? sampleAge, double? reportedSpeed}) {
     final previous = _tracks[droneId];
     var speed = previous?.speed ?? _assumedSpeed;
 
-    if (previous != null) {
+    if (reportedSpeed != null) {
+      speed = reportedSpeed;
+    } else if (previous != null) {
       final dt = at.difference(previous.at).inMilliseconds / 1000.0;
       if (dt > 0.05) {
         final observed = _distance(previous.position, position) / dt;
@@ -81,6 +105,7 @@ class ConflictMonitor {
       position: position,
       at: at,
       speed: speed,
+      measured: reportedSpeed != null,
       age: sampleAge ?? Duration.zero,
       target: previous?.target,
     );
@@ -191,17 +216,30 @@ class _Track {
     required this.at,
     required this.speed,
     required this.age,
+    this.measured = false,
     this.target,
   });
 
   final LatLng position;
   final DateTime at;
   final double speed;
+
+  /// True when [speed] came from the drone rather than from differencing our
+  /// own view of its positions.
+  final bool measured;
+
   final Duration age;
   LatLng? target;
 
   double get ageSeconds => age.inMilliseconds / 1000.0;
 
   /// How far from the reported point the drone could already be.
-  double get uncertaintyMeters => speed * ageSeconds;
+  ///
+  /// A guessed speed gets a margin on top: if we are inferring motion from 1 Hz
+  /// fixes we can be a whole sample behind, and being wrong in the direction of
+  /// "it is closer than I think" is the one that hurts.
+  double get uncertaintyMeters =>
+      speed * ageSeconds * (measured ? 1.0 : _guessPenalty);
+
+  static const double _guessPenalty = 1.5;
 }
