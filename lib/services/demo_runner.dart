@@ -126,6 +126,23 @@ class DemoRunner extends ChangeNotifier {
     if (event == MissionEvent.waypointReached) _advance(droneId, p);
   }
 
+  /// Telemetry is what opens the sequence: the first hop waits for `HOVER`.
+  ///
+  /// The `START_DEMO` ACK only says the drone accepted the mission -- it is
+  /// still on the ground, and arming plus the climb take seconds. A `MOVE` sent
+  /// on that ACK is refused with `BAD_STATE`, which aborts the demo before it
+  /// begins. `HOVER` is the drone saying it is up and waiting for work.
+  void handleTelemetry(int droneId, TelemMessage telemetry) {
+    final p = _progress[droneId];
+    if (p == null || p.phase != DemoPhase.starting) return;
+    if (telemetry.state != DroneState.hover) return;
+    // No anchor yet means the START_DEMO ACK is still in flight; telemetry
+    // repeats at 1 Hz, so the next one will open the sequence.
+    if (p.figure.isEmpty) return;
+
+    _advance(droneId, p);
+  }
+
   /// Send the next vertex, or return home once the step cap is hit.
   void _advance(int droneId, DemoProgress p) {
     if (p.figure.isEmpty) {
@@ -164,10 +181,12 @@ class DemoRunner extends ChangeNotifier {
         offsetLatLng(anchor, i * 360.0 / vertexCount, radiusMeters),
     ];
     logInfo('Drone $droneId anchored at ${anchor.latitude},${anchor.longitude} - '
-        '$vertexCount vertices at ${radiusMeters}m', _tag);
+        '$vertexCount vertices at ${radiusMeters}m, waiting for HOVER', _tag);
 
-    // steps starts at -1 so the first _advance lands on vertex 0.
-    _advance(droneId, p.copyWith(figure: figure, steps: -1));
+    // steps starts at -1 so the first _advance lands on vertex 0. That advance
+    // is handleTelemetry's job -- the drone has not left the ground yet.
+    _progress[droneId] = p.copyWith(figure: figure, steps: -1);
+    notifyListeners();
   }
 
   void _onFailed(AckFailure failure) {

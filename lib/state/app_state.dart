@@ -204,6 +204,7 @@ class AppState extends ChangeNotifier {
     switch (incoming.message) {
       case TelemMessage t:
         drone?.applyTelemetry(t);
+        demo.handleTelemetry(incoming.from, t);
         logTrace(_tag, '${Drone.nameFor(incoming.from)} st=${t.state.wire} '
             'alt=${t.altitude} bat=${t.battery ?? "-"} '
             'pos=${t.position.latitude},${t.position.longitude}');
