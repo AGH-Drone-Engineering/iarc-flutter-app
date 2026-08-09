@@ -67,8 +67,12 @@ class CommandTracker extends ChangeNotifier {
 
   final MissionSender _send;
   final List<int> _knownDrones;
-  final Duration ackTimeout;
-  final int maxAttempts;
+
+  /// Settable while the app runs, from the link tab. A timer already armed
+  /// keeps the value it was armed with; every retry and every later message
+  /// picks up the new one.
+  Duration ackTimeout;
+  int maxAttempts;
 
   final _seq = SeqCounter();
   final Map<int, _PendingGroup> _groups = {};

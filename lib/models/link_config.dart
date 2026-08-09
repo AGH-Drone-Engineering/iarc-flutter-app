@@ -33,15 +33,29 @@ class UdpEndpoint {
   String toString() => '$host:$port';
 }
 
+/// Bounds for the ACK settings, shared by the fields on the link tab and the
+/// decoder -- a stored zero would arm a zero-length retry timer.
+const kAckTimeoutMsRange = (min: 100, max: 30000);
+const kMaxAttemptsRange = (min: 1, max: 10);
+
 class LinkConfig {
   final TransportKind transport;
   final int listenPort;
   final List<UdpEndpoint> endpoints;
 
+  /// How long a mission message waits for its ACK, and how many times it is
+  /// sent before the drone is called silent. Operator-settable because the
+  /// right numbers for a LoRa hop across a field are not the ones for a bench
+  /// cable, and they apply to every message on either transport.
+  final int ackTimeoutMs;
+  final int maxAttempts;
+
   const LinkConfig({
     required this.transport,
     required this.listenPort,
     required this.endpoints,
+    this.ackTimeoutMs = 2000,
+    this.maxAttempts = 3,
   });
 
   factory LinkConfig.defaults(List<int> droneIds) => LinkConfig(
@@ -53,15 +67,24 @@ class LinkConfig {
         ],
       );
 
+  Duration get ackTimeout => Duration(milliseconds: ackTimeoutMs);
+
+  /// How long the operator waits before a silent drone is reported as such.
+  Duration get worstCaseWait => ackTimeout * maxAttempts;
+
   LinkConfig copyWith({
     TransportKind? transport,
     int? listenPort,
     List<UdpEndpoint>? endpoints,
+    int? ackTimeoutMs,
+    int? maxAttempts,
   }) =>
       LinkConfig(
         transport: transport ?? this.transport,
         listenPort: listenPort ?? this.listenPort,
         endpoints: endpoints ?? this.endpoints,
+        ackTimeoutMs: ackTimeoutMs ?? this.ackTimeoutMs,
+        maxAttempts: maxAttempts ?? this.maxAttempts,
       );
 
   LinkConfig withEndpoint(int droneId, {String? host, int? port}) => copyWith(
@@ -85,6 +108,8 @@ class LinkConfig {
         'transport': transport.name,
         'listenPort': listenPort,
         'endpoints': [for (final e in endpoints) e.toJson()],
+        'ackTimeoutMs': ackTimeoutMs,
+        'maxAttempts': maxAttempts,
       });
 
   static LinkConfig decode(String raw, List<int> droneIds) {
@@ -102,6 +127,12 @@ class LinkConfig {
         endpoints: [
           for (final id in droneIds) stored[id] ?? defaults.endpointFor(id)!,
         ],
+        ackTimeoutMs: ((j['ackTimeoutMs'] as num?)?.toInt() ??
+                defaults.ackTimeoutMs)
+            .clamp(kAckTimeoutMsRange.min, kAckTimeoutMsRange.max),
+        maxAttempts: ((j['maxAttempts'] as num?)?.toInt() ??
+                defaults.maxAttempts)
+            .clamp(kMaxAttemptsRange.min, kMaxAttemptsRange.max),
       );
     } catch (_) {
       return LinkConfig.defaults(droneIds);

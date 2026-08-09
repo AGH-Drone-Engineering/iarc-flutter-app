@@ -10,6 +10,7 @@ import '../models/link_config.dart';
 import '../models/mission_message.dart';
 import '../pathfinding/field_grid.dart' show ScanRegion;
 import '../services/command_tracker.dart';
+import '../services/debug_traffic.dart';
 import '../services/demo_runner.dart';
 import '../services/global_log.dart';
 import '../services/lora_link_service.dart';
@@ -30,14 +31,17 @@ class AppState extends ChangeNotifier {
       knownDrones: Drone.allIds,
     );
     demo = DemoRunner(tracker: tracker);
+    debug = DebugTraffic(tracker: tracker);
     tracker.addListener(notifyListeners);
     demo.addListener(notifyListeners);
+    debug.addListener(notifyListeners);
   }
 
   late final LoraLinkService lora;
   late final UdpLinkService udp;
   late final CommandTracker tracker;
   late final DemoRunner demo;
+  late final DebugTraffic debug;
 
   late LinkConfig config;
 
@@ -109,6 +113,7 @@ class AppState extends ChangeNotifier {
       if (s == LinkState.disconnected) {
         logTrace(_tag, 'link down: clearing tracker and drone telemetry');
         demo.stop();
+        debug.stop();
         tracker.reset();
         for (final d in Drone.all) {
           d.reset();
@@ -126,11 +131,41 @@ class AppState extends ChangeNotifier {
     final p = await _ensurePrefs();
     final raw = p.getString(_kLinkKey);
     if (raw != null) config = LinkConfig.decode(raw, Drone.allIds);
+    _applyAckConfig();
     notifyListeners();
   }
 
   Future<void> _saveLinkConfig() async {
     (await _ensurePrefs()).setString(_kLinkKey, config.encode());
+  }
+
+  /// The tracker is built before the stored config is read, so the settings
+  /// have to be pushed onto it rather than passed in.
+  void _applyAckConfig() {
+    tracker.ackTimeout = config.ackTimeout;
+    tracker.maxAttempts = config.maxAttempts;
+  }
+
+  Future<void> setAckTimeoutMs(int ms) async {
+    config = config.copyWith(
+      ackTimeoutMs: ms.clamp(kAckTimeoutMsRange.min, kAckTimeoutMsRange.max),
+    );
+    _applyAckConfig();
+    logInfo('ACK timeout ${config.ackTimeoutMs} ms '
+        '× ${config.maxAttempts} attempts', _tag);
+    notifyListeners();
+    await _saveLinkConfig();
+  }
+
+  Future<void> setMaxAttempts(int attempts) async {
+    config = config.copyWith(
+      maxAttempts: attempts.clamp(kMaxAttemptsRange.min, kMaxAttemptsRange.max),
+    );
+    _applyAckConfig();
+    logInfo('ACK timeout ${config.ackTimeoutMs} ms '
+        '× ${config.maxAttempts} attempts', _tag);
+    notifyListeners();
+    await _saveLinkConfig();
   }
 
   Future<void> setTransport(TransportKind kind) async {
@@ -467,6 +502,8 @@ class AppState extends ChangeNotifier {
     for (final s in _subs) {
       s.cancel();
     }
+    debug.removeListener(notifyListeners);
+    debug.dispose();
     demo.removeListener(notifyListeners);
     demo.dispose();
     tracker.removeListener(notifyListeners);

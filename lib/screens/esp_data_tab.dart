@@ -43,6 +43,10 @@ class _EspDataTabState extends State<EspDataTab>
           else
             const _UdpSection(),
           const SizedBox(height: 16),
+          const _AckSection(),
+          const SizedBox(height: 16),
+          const _DebugSection(),
+          const SizedBox(height: 16),
           const _StatusRow(),
         ],
       ),
@@ -368,6 +372,181 @@ class _UdpSectionState extends State<_UdpSection> {
                 reachable.isEmpty ? 'none' : reachable.map(Drone.nameFor).join(', ')),
           ],
         ],
+      ),
+    );
+  }
+}
+
+class _AckSection extends StatelessWidget {
+  const _AckSection();
+
+  @override
+  Widget build(BuildContext context) {
+    final app = context.watch<AppState>();
+    final worst = app.config.worstCaseWait.inMilliseconds / 1000;
+
+    return _Card(
+      title: 'ACK & retries',
+      subtitle: 'How long a command waits for the drone to acknowledge it, and '
+          'how many times it is resent on the same sequence number. Applies to '
+          'every message, on either transport.',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                flex: 2,
+                child: _NumberField(
+                  label: 'ACK timeout',
+                  suffix: 'ms',
+                  value: app.config.ackTimeoutMs,
+                  min: kAckTimeoutMsRange.min,
+                  max: kAckTimeoutMsRange.max,
+                  onChanged: app.setAckTimeoutMs,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _NumberField(
+                  label: 'Attempts',
+                  value: app.config.maxAttempts,
+                  min: kMaxAttemptsRange.min,
+                  max: kMaxAttemptsRange.max,
+                  onChanged: app.setMaxAttempts,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          _kv(context, 'Silent drone reported after',
+              '${worst.toStringAsFixed(1)} s'),
+        ],
+      ),
+    );
+  }
+}
+
+class _DebugSection extends StatelessWidget {
+  const _DebugSection();
+
+  @override
+  Widget build(BuildContext context) {
+    final app = context.watch<AppState>();
+    final scheme = Theme.of(context).colorScheme;
+    final debug = app.debug;
+    final running = debug.isRunning;
+
+    return _Card(
+      title: 'Debug traffic',
+      subtitle: 'Fires STATUS on a loop down the real command path — same '
+          'sequence counter, same ACKs and retries. Ties up the link on '
+          'purpose; nothing flies.',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _NumberField(
+            label: 'Interval',
+            suffix: 'ms',
+            value: debug.interval.inMilliseconds,
+            min: 50,
+            max: 60000,
+            onChanged: (ms) => debug.setInterval(Duration(milliseconds: ms)),
+          ),
+          const SizedBox(height: 12),
+          FilledButton.icon(
+            onPressed: (!app.isConnected && !running)
+                ? null
+                : () => running
+                    ? debug.stop()
+                    : debug.start(dest: app.selectedTarget),
+            icon: Icon(running ? Icons.stop : Icons.play_arrow),
+            label: Text(running ? 'Stop' : 'Start'),
+            style: FilledButton.styleFrom(
+              minimumSize: const Size.fromHeight(46),
+              backgroundColor: running ? scheme.error : null,
+              foregroundColor: running ? scheme.onError : null,
+            ),
+          ),
+          const SizedBox(height: 12),
+          _kv(context, 'Target',
+              app.transport.describeDest(running ? debug.dest : app.selectedTarget)),
+          _kv(context, 'Sent', '${debug.sent}'),
+          _kv(context, 'Skipped, link still busy', '${debug.skipped}'),
+        ],
+      ),
+    );
+  }
+}
+
+/// Commits on submit or on losing focus, never per keystroke: applying every
+/// intermediate value would run the debug loop at 5 ms on the way to typing
+/// 500.
+class _NumberField extends StatefulWidget {
+  const _NumberField({
+    required this.label,
+    required this.value,
+    required this.min,
+    required this.max,
+    required this.onChanged,
+    this.suffix,
+  });
+
+  final String label;
+  final int value;
+  final int min;
+  final int max;
+  final String? suffix;
+  final ValueChanged<int> onChanged;
+
+  @override
+  State<_NumberField> createState() => _NumberFieldState();
+}
+
+class _NumberFieldState extends State<_NumberField> {
+  late final _controller = TextEditingController(text: '${widget.value}');
+  late final _focus = FocusNode()..addListener(_onFocusChanged);
+
+  @override
+  void didUpdateWidget(_NumberField oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.value != oldWidget.value && !_focus.hasFocus) {
+      _controller.text = '${widget.value}';
+    }
+  }
+
+  @override
+  void dispose() {
+    _focus.dispose();
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _onFocusChanged() {
+    if (!_focus.hasFocus) _commit();
+  }
+
+  void _commit() {
+    final parsed = int.tryParse(_controller.text.trim()) ?? widget.value;
+    final clamped = parsed.clamp(widget.min, widget.max);
+    _controller.text = '$clamped';
+    if (clamped != widget.value) widget.onChanged(clamped);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return TextField(
+      controller: _controller,
+      focusNode: _focus,
+      keyboardType: TextInputType.number,
+      inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+      textInputAction: TextInputAction.done,
+      onSubmitted: (_) => _commit(),
+      decoration: InputDecoration(
+        labelText: widget.label,
+        suffixText: widget.suffix,
+        isDense: true,
+        border: const OutlineInputBorder(),
       ),
     );
   }

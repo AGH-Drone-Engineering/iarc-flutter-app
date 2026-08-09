@@ -190,4 +190,37 @@ void main() {
     tracker.dispose();
   });
 
+  test('the attempt count can be changed while the app runs', () async {
+    final sender = FakeSender();
+    final tracker = makeTracker(sender);
+
+    tracker.maxAttempts = 1;
+    await tracker.send((q) => LandMessage(seq: q), dest: 1);
+    await settle(10);
+
+    expect(sender.sent, hasLength(1), reason: 'one attempt means no retry');
+    expect(tracker.failureFor(1)!.attempts, 1);
+
+    sender.sent.clear();
+    tracker.dismissAll();
+    tracker.maxAttempts = 2;
+    await tracker.send((q) => LandMessage(seq: q), dest: 2);
+    await settle(10);
+
+    expect(sender.sent, hasLength(2), reason: '1 initial + 1 retry');
+    tracker.dispose();
+  });
+
+  test('a longer ACK timeout holds the retry off', () async {
+    final sender = FakeSender();
+    final tracker = makeTracker(sender);
+
+    tracker.ackTimeout = const Duration(seconds: 30);
+    await tracker.send((q) => LandMessage(seq: q), dest: 1);
+    await settle(10);
+
+    expect(sender.sent, hasLength(1), reason: 'still well inside the timeout');
+    expect(tracker.failures, isEmpty);
+    tracker.dispose();
+  });
 }
