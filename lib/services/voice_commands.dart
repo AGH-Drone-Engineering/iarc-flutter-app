@@ -100,7 +100,8 @@ class VoiceResult {
     this.error,
   });
 
-  /// Recognised changes that stay on the ground station.
+  /// Recognised changes that stay on the ground station, in the order they
+  /// were spoken.
   final List<VoiceIntent> applyNow;
 
   /// The one recognised command that would reach a drone, held back until the
@@ -115,6 +116,10 @@ class VoiceResult {
   bool get isEmpty =>
       applyNow.isEmpty && needsConfirm == null && target == null;
 }
+
+/// An intent together with where in the sentence it was heard, so several of
+/// them can be put back in spoken order.
+typedef _Heard = ({int at, VoiceIntent intent});
 
 // A letter in either language. Dart's `\w` is ASCII-only, so it stops dead in
 // the middle of "wierzchołków" and the pattern after it never lines up.
@@ -200,6 +205,13 @@ class VoiceCommandParser {
           '\\s+(?:for\\s+|of\\s+|dla\\s+)?$_kMain$_to$_num'),
       build: (v) => SetMainAltitudeIntent(mainAltitudeRange.clamp(v)),
     ),
+    // Polish puts the qualifier last -- "wysokość demo" -- so the bare pattern
+    // below never reaches the number.
+    (
+      pattern: _re('$_noLetterBefore$_verb$_the$_kAltitude'
+          '\\s+(?:for\\s+|of\\s+|dla\\s+)?$_kDemo$_to$_num'),
+      build: (v) => SetDemoAltitudeIntent(demoAltitudeRange.clamp(v)),
+    ),
     (
       pattern: _re('$_noLetterBefore$_verb$_the(?:$_kDemo\\s+)?$_kAltitude$_to$_num'),
       build: (v) => SetDemoAltitudeIntent(demoAltitudeRange.clamp(v)),
@@ -274,17 +286,31 @@ class VoiceCommandParser {
 
     // Each setting is blanked out of the sentence once it matches, so "set main
     // altitude to 10" cannot read a second time as a demo altitude, and one
-    // breath can carry several of them.
+    // breath can carry several of them. Every pattern is run to exhaustion
+    // rather than once, so a sentence may also repeat the same setting.
     var rest = text;
-    final applyNow = <VoiceIntent>[];
+    final heard = <_Heard>[];
     for (final setting in _settings) {
-      final m = setting.pattern.firstMatch(rest);
-      if (m == null) continue;
-      final value = _parseNumber(m.group(1)!);
-      if (value == null) continue;
-      applyNow.add(setting.build(value));
-      rest = rest.replaceRange(m.start, m.end, ' ' * (m.end - m.start));
+      for (var m = setting.pattern.firstMatch(rest);
+          m != null;
+          m = setting.pattern.firstMatch(rest)) {
+        // Blank first: the loop has to make progress even on the values that
+        // fail to parse.
+        rest = rest.replaceRange(m.start, m.end, ' ' * (m.end - m.start));
+        final value = _parseNumber(m.group(1)!);
+        if (value == null) continue;
+        heard.add((at: m.start, intent: setting.build(value)));
+      }
     }
+
+    // Read back in the order they were spoken, not in the order the patterns
+    // happen to be declared in. Saying one setting twice is a correction --
+    // "promień osiem, nie, dwanaście" -- so the last value spoken is the one
+    // that sticks, under the first mention of that setting.
+    heard.sort((a, b) => a.at.compareTo(b.at));
+    final applyNow = <Type, VoiceIntent>{
+      for (final h in heard) h.intent.runtimeType: h.intent,
+    }.values.toList();
 
     final action = _parseAction(rest);
     if (action != null && action.appliesImmediately) applyNow.add(action);

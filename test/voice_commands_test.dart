@@ -20,6 +20,8 @@ void main() {
         'set altitude to 5',
         'set the demo altitude to five',
         'altitude 5',
+        'ustaw wysokość demo na 5',
+        'set the altitude for demo to 5',
       ]) {
         expect(only<SetDemoAltitudeIntent>(phrase).meters, 5.0, reason: phrase);
       }
@@ -95,6 +97,43 @@ void main() {
       expect(r.applyNow.whereType<SetDemoAltitudeIntent>().single.meters, 4.0);
       expect(r.applyNow.whereType<SetDemoRadiusIntent>().single.meters, 9.0);
       expect(r.needsConfirm, isA<StartDemoIntent>());
+    });
+
+    test('wszystkie nastawy w jednym zdaniu', () {
+      final r = parser.parse(
+          'ustaw wysokość 5, promień 8, wierzchołki 6 i wysokość główną 12');
+      expect(r.applyNow.whereType<SetDemoAltitudeIntent>().single.meters, 5.0);
+      expect(r.applyNow.whereType<SetDemoRadiusIntent>().single.meters, 8.0);
+      expect(r.applyNow.whereType<SetDemoVerticesIntent>().single.count, 6);
+      expect(r.applyNow.whereType<SetMainAltitudeIntent>().single.meters, 12.0);
+    });
+
+    test('obie wysokości naraz, mimo szyku po polsku', () {
+      final r = parser.parse('ustaw wysokość główną na 10 i wysokość demo na 5');
+      expect(r.applyNow.whereType<SetMainAltitudeIntent>().single.meters, 10.0);
+      expect(r.applyNow.whereType<SetDemoAltitudeIntent>().single.meters, 5.0);
+    });
+
+    test('kolejność jest kolejnością wypowiedzi', () {
+      expect(
+        parser.parse('set radius 9 and vertices 6 and altitude 4').applyNow,
+        [isA<SetDemoRadiusIntent>(), isA<SetDemoVerticesIntent>(),
+            isA<SetDemoAltitudeIntent>()],
+      );
+      expect(
+        parser.parse('set altitude 4 and vertices 6 and radius 9').applyNow,
+        [isA<SetDemoAltitudeIntent>(), isA<SetDemoVerticesIntent>(),
+            isA<SetDemoRadiusIntent>()],
+      );
+    });
+
+    test('powtórzona nastawa to poprawka, liczy się ostatnia', () {
+      expect(only<SetDemoRadiusIntent>('ustaw promień na 8, nie, promień na 12')
+          .meters, 12.0);
+
+      final r = parser.parse('set radius to 8 and vertices to 6 and radius to 12');
+      expect(r.applyNow.whereType<SetDemoRadiusIntent>().single.meters, 12.0);
+      expect(r.applyNow.whereType<SetDemoVerticesIntent>().single.count, 6);
     });
   });
 
