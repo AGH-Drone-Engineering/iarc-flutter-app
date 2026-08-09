@@ -331,13 +331,6 @@ class _MissionStartSection extends StatelessWidget {
             unit: 'm',
             onChanged: app.setDemoRadius,
           ),
-          const SizedBox(height: 4),
-          Text(
-            'A ${app.demoVertices}-sided figure of radius '
-            '${app.demoRadius.toStringAsFixed(1)} m, laid around wherever the '
-            'drone reports it is when it accepts START_DEMO.',
-            style: Theme.of(context).textTheme.bodySmall,
-          ),
           const Divider(height: 24),
           SwitchListTile.adaptive(
             contentPadding: EdgeInsets.zero,
@@ -345,12 +338,8 @@ class _MissionStartSection extends StatelessWidget {
             title: const Text('Lockstep formation'),
             subtitle: Text(
               app.demoLockstep
-                  ? 'Every drone holds its vertex until the whole formation has '
-                      'arrived. Separation stays equal to the spacing between '
-                      'their takeoff points.'
-                  : 'Each drone advances on its own. The phone predicts where '
-                      'they will be and holds back any step that would break '
-                      'clearance.',
+                  ? 'All drones step together'
+                  : 'Independent, collision-checked',
               style: Theme.of(context).textTheme.bodySmall,
             ),
             value: app.demoLockstep,
@@ -371,10 +360,13 @@ class _MissionStartSection extends StatelessWidget {
             ),
             const SizedBox(height: 4),
             Text(
-              'Closest two drones may be predicted to come. The drones do not '
-              'report GPS accuracy, so this number has to cover fix error, the '
-              'airframe and tracking slop — set it larger than you think.',
-              style: Theme.of(context).textTheme.bodySmall,
+              app.worstReportedAccuracy == null
+                  ? 'no fix accuracy reported'
+                  : 'worst fix '
+                      '±${app.worstReportedAccuracy!.toStringAsFixed(1)} m',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Theme.of(context).colorScheme.primary,
+                  ),
             ),
           ],
           const SizedBox(height: 8),
@@ -397,12 +389,6 @@ class _MissionStartSection extends StatelessWidget {
                 minimumSize: const Size.fromHeight(48),
               ),
             ),
-          const SizedBox(height: 8),
-          Text(
-            'The drones hold the choreography — each step is advanced '
-            'automatically once the last one is acknowledged.',
-            style: Theme.of(context).textTheme.bodySmall,
-          ),
           const SizedBox(height: 20),
           const Divider(height: 1),
           const SizedBox(height: 16),

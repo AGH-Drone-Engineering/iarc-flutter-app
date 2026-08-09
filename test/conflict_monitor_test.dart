@@ -18,6 +18,46 @@ void track(ConflictMonitor m, int id, LatLng from, LatLng to,
 }
 
 void main() {
+  test('a drone with a poor fix is given a wider berth', () {
+    // Same geometry, same speed, same staleness. The only difference is what
+    // the receivers say about themselves.
+    ConflictMonitor build(double accuracy) {
+      final m = ConflictMonitor(clearanceMeters: 4.0);
+      for (final t in [0, 1000]) {
+        m.observe(1, p(0, 0), at(t), reportedSpeed: 0.0, accuracyMeters: accuracy);
+        m.observe(2, p(90, 8), at(t), reportedSpeed: 0.0, accuracyMeters: accuracy);
+      }
+      m.setTarget(1, null);
+      m.setTarget(2, null);
+      return m;
+    }
+
+    final good = build(0.3).closestApproach(1, 2)!;
+    final poor = build(2.5).closestApproach(1, 2)!;
+
+    expect(good, closeTo(8.0 - 0.6, 0.1));
+    expect(poor, closeTo(8.0 - 5.0, 0.1),
+        reason: 'both drones could be 2.5 m from where they claim');
+    expect(build(2.5).conflicts([1, 2]), isNotEmpty,
+        reason: '4 m of clearance is not met once the fixes are that loose');
+    expect(build(0.3).conflicts([1, 2]), isEmpty);
+  });
+
+  test('a drone that reports no accuracy is not silently treated as perfect', () {
+    // Absent accuracy contributes nothing, so clearance alone governs -- which
+    // is exactly the behaviour from before the field existed.
+    final m = ConflictMonitor(clearanceMeters: 3.0);
+    for (final t in [0, 1000]) {
+      m.observe(1, p(0, 0), at(t), reportedSpeed: 0.0);
+      m.observe(2, p(90, 8), at(t), reportedSpeed: 0.0);
+    }
+    m.setTarget(1, null);
+    m.setTarget(2, null);
+
+    expect(m.closestApproach(1, 2), closeTo(8.0, 0.1));
+    expect(m.conflicts([1, 2]), isEmpty);
+  });
+
   test('a reported speed is used instead of guessing from positions', () {
     final m = ConflictMonitor(clearanceMeters: 4.0);
     // Two fixes 1 m apart a second apart say "1 m/s". The drone says it is

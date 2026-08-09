@@ -1,11 +1,8 @@
-// lib/widgets/voice_button.dart
 import 'package:flutter/material.dart';
 
 class VoiceButton extends StatelessWidget {
-  /// Fired when the button is tapped (only if [available] is true).
   final VoidCallback? onPressed;
 
-  /// Optional long-press handler (useful for push-to-talk UX).
   final VoidCallback? onLongPress;
 
   /// Whether speech recognition is available. If false, the button is disabled

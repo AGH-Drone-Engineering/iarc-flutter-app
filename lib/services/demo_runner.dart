@@ -301,7 +301,9 @@ class DemoRunner extends ChangeNotifier {
     }
     _lastFix[droneId] = now;
     _conflicts.observe(droneId, telemetry.position, now,
-        sampleAge: age, reportedSpeed: telemetry.groundSpeed);
+        sampleAge: age,
+        reportedSpeed: telemetry.groundSpeed,
+        accuracyMeters: telemetry.accuracyMeters);
 
     if (_isGrounded(telemetry.state)) {
       _landInPlace(droneId, 'reported ${telemetry.state.wire} mid-formation');

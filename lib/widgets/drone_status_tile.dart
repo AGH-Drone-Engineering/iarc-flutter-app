@@ -59,6 +59,10 @@ class _DroneStatusTileState extends State<DroneStatusTile> {
       '${d.position!.latitude.toStringAsFixed(6)}, '
           '${d.position!.longitude.toStringAsFixed(6)}',
       if (d.altitude != null) '${d.altitude!.toStringAsFixed(1)} m',
+      if (d.groundSpeed != null) '${d.groundSpeed!.toStringAsFixed(1)} m/s',
+      d.accuracyMeters == null
+          ? '±?'
+          : '±${d.accuracyMeters!.toStringAsFixed(1)} m',
     ].join('  ·  ');
   }
 

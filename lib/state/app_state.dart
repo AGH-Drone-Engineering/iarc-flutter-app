@@ -108,6 +108,16 @@ class AppState extends ChangeNotifier {
   final _subs = <StreamSubscription<Object?>>[];
 
   bool get isConnected => transport.isConnected;
+
+  /// Worst horizontal accuracy any drone is currently reporting, in metres, or
+  /// null when none of them report one. This is what the operator's clearance
+  /// margin sits on top of, so it belongs next to the control that sets it.
+  double? get worstReportedAccuracy {
+    final reported = Drone.all
+        .map((d) => d.accuracyMeters)
+        .whereType<double>();
+    return reported.isEmpty ? null : reported.reduce((a, b) => a > b ? a : b);
+  }
   List<Drone> get drones => Drone.all;
 
   Future<void> init() async {

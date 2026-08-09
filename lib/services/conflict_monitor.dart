@@ -8,24 +8,32 @@ import 'package:latlong2/latlong.dart';
 /// drones advance independently. Lockstep guarantees separation geometrically;
 /// off-step there is no guarantee, so every step has to be checked.
 ///
-/// ## Why a clearance number and not a computed accuracy
+/// ## Measured uncertainty, and why there is still a clearance number
 ///
-/// Nothing on the wire says how good a *fix* is. TELEM carries position, state,
-/// velocity and a sample time, but no accuracy: the drone reads `eph`/`h_acc`
-/// and satellite count from MAVLink and gates arming on them, then keeps them to
-/// itself. So the phone cannot derive a position error, and pretending otherwise
-/// would be inventing a number. The operator sets [clearanceMeters] instead: the
-/// separation they want kept, covering GPS error, airframe size and how sloppily
-/// the drone tracks a line.
+/// TELEM carries `acc`, the GPS receiver's own 1-sigma horizontal accuracy, and
+/// [observe] folds it into that drone's uncertainty — so a pair with poor fixes
+/// is required to stay further apart than a pair with good ones, automatically.
 ///
-/// Note that optical flow does not change this. Flow constrains *velocity* and
-/// short-term drift; the absolute latitude and longitude stay GPS-anchored. It
-/// makes the drone fly its leg more precisely and makes [observe]'s speed
-/// trustworthy — it does not let clearance shrink.
+/// It is not the whole story, because it is measured *before* the EKF fuses IMU
+/// and optical flow. The filter's own 1-sigma — `AP_AHRS::get_pos_vel_uncertainty`,
+/// straight off the state covariance, which would account for all of it — never
+/// reaches us: ArduPilot sends neither `ESTIMATOR_STATUS` nor
+/// `GLOBAL_POSITION_INT_COV`, the variances in `EKF_STATUS_REPORT` are
+/// dimensionless test ratios, and it is not in the Lua bindings either. So `acc`
+/// bounds the error rather than measuring it. Pessimistic is the safe direction
+/// for a separation bubble.
 ///
-/// ## What it does compute
+/// [clearanceMeters] therefore stays: it is the operator's margin *on top of*
+/// the measured uncertainty, covering the airframe, how loosely the drone tracks
+/// a line, and how close they are willing to watch two aircraft fly.
 ///
-/// Two things it *can* know are used to inflate that number honestly:
+/// Optical flow does not shrink any of this. Flow constrains *velocity* and
+/// short-term drift; absolute latitude and longitude stay GPS-anchored. It makes
+/// the drone fly its leg more precisely and makes [observe]'s speed trustworthy.
+///
+/// ## What it computes
+///
+/// Three things are used to size each drone's uncertainty:
 ///
 ///  * **Speed**, reported by the drone's own EKF (`vel` on TELEM) when it is
 ///    available, and inferred from consecutive fixes only when it is not. The
@@ -37,6 +45,7 @@ import 'package:latlong2/latlong.dart';
 ///  * **Staleness**. A fix that is one second old, from a drone doing 2 m/s, has
 ///    the drone anywhere in a 2 m circle. That radius is added to the required
 ///    separation rather than hoped away.
+///  * **Reported accuracy**, `acc`, as described above.
 ///
 /// Prediction is a straight run to the commanded vertex at the observed speed,
 /// stopping there — which is what the drone actually does. Sampling that forward
@@ -80,11 +89,17 @@ class ConflictMonitor {
   /// has none of those problems — and with optical flow fused into it, it is
   /// good to a few cm/s.
   ///
+  /// [accuracyMeters] is the drone's reported horizontal accuracy. It is added
+  /// to that drone's uncertainty, so a pair with poor fixes has to stay further
+  /// apart than a pair with good ones. Absent, it contributes nothing and
+  /// [clearanceMeters] carries the whole burden — which is what the operator's
+  /// number was always for.
+  ///
   /// [sampleAge] is how old the fix was on arrival (from DroneClock); pass null
   /// when unknown, and it is treated as fresh — staleness is then somebody
   /// else's problem, not silently folded in as safety margin here.
   void observe(int droneId, LatLng position, DateTime at,
-      {Duration? sampleAge, double? reportedSpeed}) {
+      {Duration? sampleAge, double? reportedSpeed, double? accuracyMeters}) {
     final previous = _tracks[droneId];
     var speed = previous?.speed ?? _assumedSpeed;
 
@@ -107,6 +122,7 @@ class ConflictMonitor {
       speed: speed,
       measured: reportedSpeed != null,
       age: sampleAge ?? Duration.zero,
+      accuracy: accuracyMeters ?? 0.0,
       target: previous?.target,
     );
   }
@@ -217,6 +233,7 @@ class _Track {
     required this.speed,
     required this.age,
     this.measured = false,
+    this.accuracy = 0.0,
     this.target,
   });
 
@@ -229,6 +246,10 @@ class _Track {
   final bool measured;
 
   final Duration age;
+
+  /// Reported horizontal accuracy in metres; 0 when the drone reports none.
+  final double accuracy;
+
   LatLng? target;
 
   double get ageSeconds => age.inMilliseconds / 1000.0;
@@ -238,8 +259,10 @@ class _Track {
   /// A guessed speed gets a margin on top: if we are inferring motion from 1 Hz
   /// fixes we can be a whole sample behind, and being wrong in the direction of
   /// "it is closer than I think" is the one that hurts.
+  /// Where the drone could be: how far it may have travelled since the fix was
+  /// taken, plus how wrong the fix itself may be.
   double get uncertaintyMeters =>
-      speed * ageSeconds * (measured ? 1.0 : _guessPenalty);
+      speed * ageSeconds * (measured ? 1.0 : _guessPenalty) + accuracy;
 
   static const double _guessPenalty = 1.5;
 }

@@ -4,9 +4,8 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 
 /// Draws ground-true dots whose screen size corresponds to a real-world
-/// diameter in meters, independent of zoom.
-/// Now also draws a darker inner dot (centered) with its own configurable
-/// diameter (default 0.20 m = 20 cm).
+/// diameter in meters, independent of zoom, with a darker centred inner dot of
+/// its own configurable diameter.
 class GroundDotsLayer extends StatelessWidget {
   const GroundDotsLayer({
     super.key,
@@ -40,7 +39,7 @@ class GroundDotsLayer extends StatelessWidget {
   final double innerMinPixelDiameter;
   final double innerMaxPixelDiameter;
 
-  // meters per pixel at a given latitude & zoom for Web Mercator (tileSize = 256)
+  /// Web Mercator, tileSize 256 -- hence the 256 in the denominator.
   double _metersPerPixel(double latDeg, double zoom) {
     const earthCircumference = 40075016.68557849; // meters
     final latRad = latDeg * math.pi / 180.0;
@@ -48,7 +47,6 @@ class GroundDotsLayer extends StatelessWidget {
     return (math.cos(latRad) * earthCircumference) / denom;
   }
 
-  // Make a darker version of the given color.
   Color _darker(Color c, [double amount = 0.35]) {
     final hsl = HSLColor.fromColor(c);
     final l = (hsl.lightness - amount).clamp(0.0, 1.0);
@@ -70,22 +68,18 @@ class GroundDotsLayer extends StatelessWidget {
     for (final p in points) {
       final mpp = _metersPerPixel(p.latitude, zoom);
 
-      // Outer circle diameter/radius (px)
       var outerDiameterPx = diameterMeters / mpp;
       outerDiameterPx = outerDiameterPx.clamp(minPixelDiameter, maxPixelDiameter);
       final outerRadiusPx = outerDiameterPx / 2.0;
 
-      // Inner circle diameter/radius (px)
       var innerDiameterPx = innerDiameterMeters / mpp;
       innerDiameterPx = innerDiameterPx.clamp(innerMinPixelDiameter, innerMaxPixelDiameter);
 
-      // Ensure the inner dot is not larger than the outer one
       if (innerDiameterPx > outerDiameterPx) {
         innerDiameterPx = math.max(innerMinPixelDiameter, outerDiameterPx * 0.7);
       }
       final innerRadiusPx = innerDiameterPx / 2.0;
 
-      // Convert LatLng → on-screen Offset within the FlutterMap widget
       final scr = camera.latLngToScreenOffset(p);
       offsets.add(scr);
       outerRadii.add(outerRadiusPx);
@@ -138,9 +132,7 @@ class _GroundDotsPainter extends CustomPainter {
       ..isAntiAlias = true;
 
     for (var i = 0; i < offsets.length; i++) {
-      // Outer dot
       canvas.drawCircle(offsets[i], outerRadii[i], outer);
-      // Inner dot
       canvas.drawCircle(offsets[i], innerRadii[i], inner);
     }
   }

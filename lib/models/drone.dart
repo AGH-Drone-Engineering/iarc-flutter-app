@@ -41,6 +41,13 @@ class Drone {
   DroneState state = DroneState.boot;
   LatLng? position;
   double? altitude;
+
+  /// Horizontal position accuracy the drone last reported, in metres, or null
+  /// when its receiver does not publish one. Null is "unknown", not "perfect".
+  double? accuracyMeters;
+
+  /// Ground speed from the drone's own EKF, in m/s.
+  double? groundSpeed;
   double? battery;
   int? batteryPercent;
   MissionEvent? lastEvent;
@@ -91,6 +98,8 @@ class Drone {
     state = t.state;
     position = t.position;
     altitude = t.altitude;
+    accuracyMeters = t.accuracyMeters;
+    groundSpeed = t.groundSpeed;
     if (t.battery != null) battery = t.battery;
     if (t.batteryPercent != null) batteryPercent = t.batteryPercent;
     track.add(t.position);
@@ -114,6 +123,8 @@ class Drone {
     state = DroneState.boot;
     position = null;
     altitude = null;
+    accuracyMeters = null;
+    groundSpeed = null;
     battery = null;
     batteryPercent = null;
     lastEvent = null;

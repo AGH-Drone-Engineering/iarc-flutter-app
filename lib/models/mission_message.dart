@@ -168,6 +168,7 @@ sealed class MissionMessage {
           state: DroneState.fromWire(_string(parsed, 'st')),
           sampleMs: _optionalDouble(parsed, 'ts')?.round(),
           velocity: _optionalVelocity(parsed),
+          accuracyMeters: _optionalDouble(parsed, 'acc'),
         ),
       'MINE' => MineMessage(
           seq: seq,
@@ -354,6 +355,17 @@ class TelemMessage extends MissionMessage {
       ? null
       : sqrt(velocity!.north * velocity!.north + velocity!.east * velocity!.east);
 
+  /// Horizontal position accuracy in metres, or null when the drone has none.
+  ///
+  /// The GPS receiver's own 1-sigma, taken *before* the EKF fuses IMU and
+  /// optical flow — so it bounds the error of [position] rather than measuring
+  /// it. The filter's own number would be better and is not available: ArduPilot
+  /// sends neither `ESTIMATOR_STATUS` nor `GLOBAL_POSITION_INT_COV`, and the
+  /// variances in `EKF_STATUS_REPORT` are dimensionless test ratios.
+  ///
+  /// Pessimistic is the right direction here — this sizes a separation bubble.
+  final double? accuracyMeters;
+
   /// When the drone READ this position, in milliseconds on its own monotonic
   /// clock (`ts` on the wire). Null from a drone that predates the field.
   ///
@@ -373,6 +385,7 @@ class TelemMessage extends MissionMessage {
     this.batteryPercent,
     this.sampleMs,
     this.velocity,
+    this.accuracyMeters,
   });
 
   @override
@@ -387,6 +400,7 @@ class TelemMessage extends MissionMessage {
         'st': state.wire,
         if (velocity != null)
           'vel': [_round(velocity!.north, 2), _round(velocity!.east, 2)],
+        if (accuracyMeters != null) 'acc': _round(accuracyMeters!, 2),
         if (sampleMs != null) 'ts': sampleMs,
       };
 }

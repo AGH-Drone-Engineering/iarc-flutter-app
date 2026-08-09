@@ -72,6 +72,36 @@ void main() {
     expect(acksTo(5), hasLength(1));
   });
 
+  test('accuracy and speed from TELEM reach the drone the UI renders', () async {
+    // The UI reads Drone, not TelemMessage. Everything applyTelemetry drops is
+    // invisible to the operator no matter what the wire carried.
+    await link.deliver(4, TelemMessage(
+      seq: 30,
+      position: const LatLng(50.062975, 19.9157),
+      altitude: 3.0,
+      state: DroneState.demo,
+      velocity: (north: 3.0, east: 4.0),
+      accuracyMeters: 1.4,
+    ));
+
+    final drone = Drone.byId(4)!;
+    expect(drone.accuracyMeters, 1.4);
+    expect(drone.groundSpeed, closeTo(5.0, 1e-9));
+    expect(app.worstReportedAccuracy, 1.4);
+  });
+
+  test('a drone that reports no accuracy shows unknown, not zero', () async {
+    await link.deliver(4, TelemMessage(
+      seq: 31,
+      position: const LatLng(50.062975, 19.9157),
+      altitude: 3.0,
+      state: DroneState.hover,
+    ));
+
+    expect(Drone.byId(4)!.accuracyMeters, isNull);
+    expect(app.worstReportedAccuracy, isNull);
+  });
+
   test('two mines just outside the merge radius stay two mines', () async {
     // 3.4 m apart, against a 3 m merge threshold. This is the case that a
     // distance rounded to whole metres silently collapsed into one.

@@ -217,6 +217,7 @@ the wire and make every acknowledgement a position fix, which is what lets a
   "pct": 87,
   "st": "MAIN",
   "vel": [1.23, -0.45],
+  "acc": 0.85,
   "ts": 412350
 }
 ```
@@ -229,6 +230,7 @@ the wire and make every acknowledgement a position fix, which is what lets a
 | `pct`        | int    | Battery remaining, `0..100`. Optional.       |
 | `st`         | string | See below                                    |
 | `vel`        | float[2] | Ground velocity `[north, east]`, m/s. Optional. |
+| `acc`        | float  | Horizontal position accuracy, metres. Optional. |
 | `ts`         | int    | Sample time, see below. Optional.            |
 
 #### `vel` — ground velocity
@@ -246,6 +248,25 @@ On an airframe with optical flow fused (`EK3_SRC1_VELXY = 5`) this is the most
 accurate number the vehicle produces, good to a few cm/s. Note that flow
 improves *velocity* and short-term drift; absolute latitude and longitude stay
 GPS-anchored, so `vel` being excellent does not mean the position is.
+
+#### `acc` — how good the fix is
+
+The GPS receiver's own 1-sigma horizontal accuracy, in metres
+(`GPS_RAW_INT.h_acc`). Omitted when the receiver does not report one, and
+"omitted" means *unknown*, not *perfect*.
+
+Read this as an upper bound on the error in `lat`/`lon`, not a measurement of
+it. It is taken **before** the EKF fuses IMU and optical flow, so the position
+actually reported is normally better than `acc` claims. The number that would
+say how much better is the filter's own 1-sigma from its state covariance
+(`AP_AHRS::get_pos_vel_uncertainty`), and it is not obtainable: ArduPilot sends
+neither `ESTIMATOR_STATUS` (which carries `pos_horiz_accuracy` in metres) nor
+`GLOBAL_POSITION_INT_COV`; the variances in `EKF_STATUS_REPORT` are
+dimensionless innovation test ratios; and it is not exposed to Lua scripting, so
+no onboard script can republish it. Getting it would take a firmware change.
+
+Being pessimistic is the right failure direction for anything sizing a
+separation bubble, which is what the ground station uses it for.
 
 #### `ts` — when the position was taken
 
