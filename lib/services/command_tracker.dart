@@ -96,7 +96,9 @@ class CommandTracker extends ChangeNotifier {
   /// command counter so every phone→drone message has a distinct `q`.
   int nextSeq() => _seq.take();
 
-  Future<void> send(
+  /// Sends one command and returns the `q` it went out with, so the caller can
+  /// [withdraw] it later. Tracking continues in the background.
+  Future<int> send(
     MissionMessage Function(int seq) build, {
     required int dest,
     List<int>? awaitAckFrom,
@@ -110,7 +112,7 @@ class CommandTracker extends ChangeNotifier {
     if (!message.expectsAck) {
       logTrace(_tag, '${message.type} q=$seq dest=$dest (no ACK expected)');
       await _send(dest, message);
-      return;
+      return seq;
     }
 
     final group = _PendingGroup(
@@ -127,9 +129,28 @@ class CommandTracker extends ChangeNotifier {
     final accepted = await _send(dest, message);
     if (!accepted) {
       _failGroup(group, AckFailureKind.linkDown);
-      return;
+      return seq;
     }
     _arm(group);
+    return seq;
+  }
+
+  /// Stops chasing an ACK for [seq]: no more retries, and no failure reported.
+  ///
+  /// For a command the drone can still usefully act on, letting the retries run
+  /// is right. For one the ground station has since superseded it is not: the
+  /// retry reuses the original `q`, and once it lands outside the drone's
+  /// retransmission window it is a *new* command carrying an order that no
+  /// longer reflects where the formation is. Withdrawing is not a failure —
+  /// nothing is wrong with the drone — so it must not reach [onFailed], which
+  /// would land it.
+  void withdraw(int seq) {
+    final group = _groups.remove(seq);
+    if (group == null) return;
+    group.timer?.cancel();
+    logTrace(_tag, '${group.message.type} q=$seq withdrawn after '
+        '${group.attempts} attempt(s) — superseded');
+    notifyListeners();
   }
 
   void _arm(_PendingGroup group) {

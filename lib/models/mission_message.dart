@@ -182,6 +182,12 @@ sealed class MissionMessage {
           cornerA: _latLonPair(parsed, 'a'),
           cornerB: _latLonPair(parsed, 'b'),
         ),
+      'ARRIVED' => ArrivedMessage(
+          seq: seq,
+          target: _latLonPair(parsed, 'to'),
+          at: _latLonPair(parsed, 'at'),
+          speed: _optionalDouble(parsed, 'spd'),
+        ),
       'START_DEMO' => StartDemoMessage(seq: seq, altitude: _double(parsed, 'alt')),
       'START_MAIN' => StartMainMessage(
           seq: seq,
@@ -454,6 +460,43 @@ class ScanMessage extends MissionMessage {
   Map<String, Object?> get fields => {
         'a': [_round(cornerA.latitude, 7), _round(cornerA.longitude, 7)],
         'b': [_round(cornerB.latitude, 7), _round(cornerB.longitude, 7)],
+      };
+}
+
+/// Dron melduje, że stanął na punkcie, do którego go wysłano (PROTOCOL.md §8).
+///
+/// To jedyna wiadomość, która przestawia szyk, więc jest raportem, a nie
+/// zdarzeniem: dron powtarza ją aż do potwierdzenia. Zgubiony EVT operator co
+/// najwyżej przeoczy, zgubiony dolot zatrzymuje figurę.
+///
+/// [target] to `to` z MOVE-a, odesłane z powrotem, i to ono czyni ten meldunek
+/// samoidentyfikującym. Stacja naziemna zna krok, który jest w locie, więc
+/// dolot z innym `to` jest dolotem tam, gdzie nikt nie kazał, i nie ma prawa
+/// zwolnić bariery. Sama pozycja by tego nie rozstrzygnęła: na ciasnej figurze
+/// sąsiednie wierzchołki leżą w promieniu tolerancji dolotu.
+///
+/// [at] to miejsce, w którym dron faktycznie stanął, a [speed] prędkość w tej
+/// chwili — obie po to, żeby meldunek dało się sprawdzić, a nie tylko przyjąć.
+class ArrivedMessage extends MissionMessage {
+  final LatLng target;
+  final LatLng at;
+  final double? speed;
+
+  const ArrivedMessage({
+    required super.seq,
+    required this.target,
+    required this.at,
+    this.speed,
+  });
+
+  @override
+  String get type => 'ARRIVED';
+
+  @override
+  Map<String, Object?> get fields => {
+        'to': [_round(target.latitude, 7), _round(target.longitude, 7)],
+        'at': [_round(at.latitude, 7), _round(at.longitude, 7)],
+        if (speed != null) 'spd': _round(speed!, 2),
       };
 }
 

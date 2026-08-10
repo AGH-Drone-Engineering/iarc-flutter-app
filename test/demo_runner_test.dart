@@ -37,8 +37,9 @@ final _anchors = {1: _anchorA, 2: _anchorB};
   List<int> drones = const [1, 2],
   int maxSteps = 200,
   Duration barrierTimeout = const Duration(seconds: 30),
-  Duration telemetryTimeout = const Duration(seconds: 30),
-  Duration groundTelemetryTimeout = const Duration(seconds: 30),
+  Duration? telemetryTimeout = const Duration(seconds: 30),
+  Duration? groundTelemetryTimeout = const Duration(seconds: 30),
+  Duration legTimeout = const Duration(seconds: 30),
   Duration watchdogPeriod = const Duration(milliseconds: 15),
   bool lockstep = true,
   double clearanceMeters = 4.0,
@@ -61,6 +62,7 @@ final _anchors = {1: _anchorA, 2: _anchorB};
       barrierTimeout: barrierTimeout,
       telemetryTimeout: telemetryTimeout,
       groundTelemetryTimeout: groundTelemetryTimeout,
+      legTimeout: legTimeout,
       watchdogPeriod: watchdogPeriod,
     ),
   );
@@ -95,20 +97,36 @@ void telem(DemoRunner runner, int drone, DroneState state, LatLng position,
   );
 }
 
-/// Fly a leg in telemetry: in transit, then stopped on the vertex.
+/// The drone's arrival report -- the only thing that moves the formation.
+///
+/// [target] is the `MOVE`'s `to` echoed back, [at] where it actually stopped.
+/// They differ when the point of the test is a drone that ended up somewhere
+/// other than where it was sent.
+void arrive(DemoRunner runner, int drone, LatLng target,
+    {LatLng? at, double speed = 0.0}) {
+  runner.handleArrived(
+    drone,
+    ArrivedMessage(seq: 9300, target: target, at: at ?? target, speed: speed),
+  );
+}
+
+/// Fly a leg: in transit, stopped on the vertex, then the report that says so.
 void flyTo(DemoRunner runner, int drone, LatLng vertex) {
   telem(runner, drone, DroneState.demo, vertex);
   telem(runner, drone, DroneState.hover, vertex);
+  arrive(runner, drone, vertex);
 }
 
 /// Point [n] metres north and [e] metres east of [from].
 LatLng ne(LatLng from, double n, double e) =>
     offsetLatLng(offsetLatLng(from, 0, n), 90, e);
 
-/// Take off and reach the opening barrier.
+/// Take off and reach the opening barrier -- which is an ARRIVED at the anchor,
+/// like every later step, rather than a telemetry state change.
 void becomeAirborne(DemoRunner runner, int drone) {
   telem(runner, drone, DroneState.takeoff, _anchors[drone]!);
   telem(runner, drone, DroneState.hover, _anchors[drone]!);
+  arrive(runner, drone, _anchors[drone]!);
 }
 
 Future<void> pump() => Future<void>.delayed(Duration.zero);
@@ -165,8 +183,7 @@ void main() {
             'every demo before it begins');
 
     // ... and it still runs normally once it is up.
-    telem(runner, 1, DroneState.takeoff, _anchorA);
-    telem(runner, 1, DroneState.hover, _anchorA);
+    becomeAirborne(runner, 1);
     await pump();
     expect(runner.progressFor(1)!.steps, 0);
     expect(sender.movesTo(1), hasLength(1));
@@ -305,10 +322,10 @@ void main() {
     final figureB = runner.progressFor(2)!.figure;
 
     // Drone 2 gives up mid-leg -- pilot takeover, or a goto that timed out --
-    // and holds 4 m short of the vertex.
+    // and calls the right vertex arrived from 4 m short of it. The target it
+    // echoes back is correct, so only checking `at` catches this.
     flyTo(runner, 1, figureA[0]);
-    telem(runner, 2, DroneState.demo, _anchorB);
-    telem(runner, 2, DroneState.hover, offsetLatLng(figureB[0], 180, 4.0));
+    arrive(runner, 2, figureB[0], at: offsetLatLng(figureB[0], 180, 4.0));
     await pump();
 
     expect(runner.progressFor(2)!.phase, DemoPhase.landing);
@@ -460,6 +477,192 @@ void main() {
         reason: 'the reachable drones must come down too');
     expect(runner.progressFor(1)!.phase, DemoPhase.landing);
     expect(runner.isRunning, isFalse);
+
+    runner.dispose();
+    tracker.dispose();
+  });
+
+  // ---- regressions from phone.log 2026-08-10 14:02 ------------------------
+  // MOVE q=14 (vertex 1) was ACKed but the ACK frame was lost, so its retry
+  // timer stayed armed. It fired at 14:03:02, four steps later, re-sending the
+  // vertex-1 coordinate; the drone was past the retransmission window, took it
+  // as a new order, and flew 3.7 m back across the figure from vertex 4.
+  test('a step the formation has walked past is never retried', () async {
+    final sender = FakeSender();
+    final (:tracker, :runner) = await launched(sender);
+    final figureA = runner.progressFor(1)!.figure;
+    final figureB = runner.progressFor(2)!.figure;
+
+    // Vertex 0 goes out and drone 1's ACK never comes back -- only drone 2's.
+    final staleTarget = sender.movesTo(1).single.target;
+    expect(staleTarget, figureA[0]);
+
+    for (var step = 0; step < 3; step++) {
+      flyTo(runner, 1, figureA[step % 8]);
+      flyTo(runner, 2, figureB[step % 8]);
+      await pump();
+      ackLast(tracker, sender, 2);
+    }
+    expect(runner.progressFor(1)!.steps, 3);
+
+    // Only the live step is answered: every earlier one is still unacknowledged,
+    // which is the situation that armed the stale retry in the first place.
+    ackLast(tracker, sender, 1);
+
+    // Long enough for every retry the vertex-0 group would ever have fired.
+    await settle(400);
+
+    expect(sender.movesTo(1).where((m) => m.target == staleTarget), hasLength(1),
+        reason: 'vertex 0 must not go back on the wire once vertex 3 is live');
+    expect(sender.movesTo(1).last.target, figureA[3],
+        reason: 'the live step is the last thing the drone was told');
+    expect(sender.to(1).whereType<LandMessage>(), isEmpty,
+        reason: 'a withdrawn command is not a failure');
+    expect(runner.progressFor(1)!.phase, isNot(DemoPhase.landing));
+
+    runner.dispose();
+    tracker.dispose();
+  });
+
+  // ---- regression from phone.log 2026-08-10 13:57:40 -----------------------
+  // The drone landed itself on its 30 s idle timeout, so it refused our LAND
+  // with BAD_STATE -- and that NACK escalated into landing the whole formation.
+  test('a LAND refused because the drone is already landing spares the rest',
+      () async {
+    final sender = FakeSender();
+    final (:tracker, :runner) = await launched(sender);
+    // Drone 1 is mid-leg with its MOVE answered, so nothing of its own can land
+    // it -- if it comes down, the escalation is the only thing that did it.
+    ackLast(tracker, sender, 1);
+
+    telem(runner, 2, DroneState.landing, _anchorB);
+    await pump();
+    expect(runner.progressFor(2)!.phase, DemoPhase.landing);
+
+    final land = sender.to(2).whereType<LandMessage>().last;
+    tracker.handleIncoming(
+      2,
+      NackMessage(seq: 9200, respondingTo: land.seq, error: NackError.badState),
+    );
+    await settle(400);
+
+    expect(sender.to(1).whereType<LandMessage>(), isEmpty,
+        reason: '"already landing" is the outcome we asked for, not a fault');
+    expect(runner.progressFor(1)!.phase, isNot(DemoPhase.landing));
+    expect(tracker.failureFor(2), isNull);
+
+    runner.dispose();
+    tracker.dispose();
+  });
+
+  // ---- ARRIVED is the gate, and it is checked ------------------------------
+
+  test('an arrival at a vertex we are not waiting on lands the drone', () async {
+    final sender = FakeSender();
+    final (:tracker, :runner) = await launched(sender);
+    final figureA = runner.progressFor(1)!.figure;
+    final figureB = runner.progressFor(2)!.figure;
+
+    // Both are walking to vertex 0. Drone 2 instead reports arriving at vertex 3
+    // -- a report delayed on the link, or a drone acting on a stale order. It is
+    // physically ON a vertex and standing still, so nothing about the position
+    // alone is suspicious; only the echoed target gives it away.
+    flyTo(runner, 1, figureA[0]);
+    arrive(runner, 2, figureB[3]);
+    await pump();
+
+    expect(runner.progressFor(2)!.phase, DemoPhase.landing);
+    expect(runner.progressFor(2)!.detail,
+        contains('somewhere it was not sent'));
+    expect(sender.lastTo(2), isA<LandMessage>());
+
+    runner.dispose();
+    tracker.dispose();
+  });
+
+  test('a repeated arrival does not step the formation twice', () async {
+    final sender = FakeSender();
+    final (:tracker, :runner) = await launched(sender);
+    final figureA = runner.progressFor(1)!.figure;
+    final figureB = runner.progressFor(2)!.figure;
+
+    flyTo(runner, 1, figureA[0]);
+    flyTo(runner, 2, figureB[0]);
+    await pump();
+    expect(runner.progressFor(1)!.steps, 1);
+
+    // The drone never got our ACK and says it again. AppState drops a repeat
+    // before it reaches here, but the barrier must not depend on that: acting on
+    // it would put the formation a vertex ahead of where anyone has flown.
+    arrive(runner, 1, figureA[0]);
+    await pump();
+
+    expect(runner.progressFor(1)!.steps, 1, reason: 'still walking to vertex 1');
+    expect(sender.movesTo(1), hasLength(2));
+
+    runner.dispose();
+    tracker.dispose();
+  });
+
+  test('with TELEM off the formation still walks, and silence is not a fault',
+      () async {
+    final sender = FakeSender();
+    // telemetryTimeout: null is what an operator setting --telem-hz 0 means for
+    // the ground station. Nothing will ever call handleTelemetry.
+    final built = build(sender,
+        telemetryTimeout: null,
+        groundTelemetryTimeout: null,
+        legTimeout: const Duration(seconds: 30));
+    final (:tracker, :runner) = built;
+    await runner.start([1, 2], 3.0);
+    ackLast(tracker, sender, 1);
+    ackLast(tracker, sender, 2);
+
+    // Opening barrier from ARRIVED at the anchor, no telemetry anywhere.
+    arrive(runner, 1, _anchorA);
+    arrive(runner, 2, _anchorB);
+    await pump();
+
+    final figureA = runner.progressFor(1)!.figure;
+    final figureB = runner.progressFor(2)!.figure;
+    expect(runner.progressFor(1)!.steps, 0);
+
+    for (var step = 0; step < 3; step++) {
+      arrive(runner, 1, figureA[step % 8]);
+      arrive(runner, 2, figureB[step % 8]);
+      await pump();
+      ackLast(tracker, sender, 1);
+      ackLast(tracker, sender, 2);
+    }
+
+    expect(runner.progressFor(1)!.steps, 3);
+    expect(sender.to(1).whereType<LandMessage>(), isEmpty,
+        reason: 'no position for the whole flight must not land anyone');
+
+    runner.dispose();
+    tracker.dispose();
+  });
+
+  test('a leg that never reports an arrival is landed, telemetry or not',
+      () async {
+    final sender = FakeSender();
+    final built = build(sender,
+        drones: [1],
+        telemetryTimeout: null,
+        groundTelemetryTimeout: null,
+        legTimeout: const Duration(milliseconds: 80));
+    final (:tracker, :runner) = built;
+    await runner.start([1], 3.0);
+    ackLast(tracker, sender, 1);
+    arrive(runner, 1, _anchorA);
+    await pump();
+    expect(runner.progressFor(1)!.phase, DemoPhase.stepping);
+
+    await settle(250);
+
+    expect(runner.progressFor(1)!.phase, DemoPhase.landing);
+    expect(runner.progressFor(1)!.detail, contains('no arrival reported within'));
+    expect(sender.lastTo(1), isA<LandMessage>());
 
     runner.dispose();
     tracker.dispose();

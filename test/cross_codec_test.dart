@@ -80,6 +80,22 @@ void main() {
     expect(evt.event, MissionEvent.waypointReached);
   });
 
+  test('an ARRIVED survives the crossing, target and all', () {
+    final m = decode('arrived') as ArrivedMessage;
+
+    expect(m.seq, 42);
+    expect(m.target.latitude, closeTo(50.063157, 1e-9), reason: 'to[0] is lat');
+    expect(m.target.longitude, closeTo(19.915882, 1e-9), reason: 'to[1] is lon');
+    expect(m.at.latitude, closeTo(50.063155, 1e-9));
+    expect(m.at.longitude, closeTo(19.915879, 1e-9));
+    expect(m.speed, 0.12, reason: 'spd');
+
+    // spd is optional -- a drone that cannot report speed still reports arrival.
+    final bare = decode('arrived_no_speed') as ArrivedMessage;
+    expect(bare.speed, isNull);
+    expect(bare.target.latitude, closeTo(50.063157, 1e-9));
+  });
+
   test('re-encoding in Dart produces the same fields Python sent', () {
     for (final key in vectors.keys) {
       final original = jsonDecode(vectors[key] as String) as Map<String, Object?>;

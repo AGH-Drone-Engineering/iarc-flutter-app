@@ -255,6 +255,13 @@ class AppState extends ChangeNotifier {
           '(${scans.length} łącznie)',
           _tag,
         );
+      case ArrivedMessage a:
+        // Potwierdzamy zawsze, przekazujemy raz. Powtórka znaczy tylko tyle, że
+        // nasze poprzednie ACK nie doszło - dron stoi tam, gdzie stał, a drugie
+        // zwolnienie bariery przestawiłoby szyk o wierzchołek za daleko.
+        if (_acknowledgeReport(incoming.from, a.seq, 'ARRIVED')) {
+          demo.handleArrived(incoming.from, a);
+        }
       case EventMessage e:
         drone?.lastEvent = e.event;
         demo.handleEvent(incoming.from, e.event);

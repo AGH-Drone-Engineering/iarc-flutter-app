@@ -104,6 +104,7 @@ class DemoRunner extends ChangeNotifier {
     this.barrierTimeout = const Duration(seconds: 6),
     this.telemetryTimeout = const Duration(seconds: 4),
     this.groundTelemetryTimeout = const Duration(seconds: 12),
+    this.legTimeout = const Duration(seconds: 30),
     this.watchdogPeriod = const Duration(milliseconds: 500),
   })  : _tracker = tracker,
         _conflicts = ConflictMonitor(clearanceMeters: clearanceMeters) {
@@ -162,8 +163,16 @@ class DemoRunner extends ChangeNotifier {
   final Duration barrierTimeout;
 
   /// A position this old is not evidence of anything. Airborne telemetry is
-  /// 1 Hz, so this is several missed frames, not a hair trigger.
-  final Duration telemetryTimeout;
+  /// 1 Hz by default, so this is several missed frames, not a hair trigger.
+  ///
+  /// Null switches the silence watchdog off, which is required rather than
+  /// optional once the operator turns the drone's TELEM rate down: at 0.1 Hz a
+  /// four-second limit lands a perfectly healthy formation between frames, and
+  /// at 0 Hz there is nothing to be silent. Liveness then rests on
+  /// [legTimeout] instead, which measures the thing that actually has to
+  /// happen -- a step completing -- rather than the reporting that used to
+  /// accompany it.
+  final Duration? telemetryTimeout;
 
   /// The same, for a drone that has not taken off yet.
   ///
@@ -172,7 +181,20 @@ class DemoRunner extends ChangeNotifier {
   /// shorter than the gap between two perfectly on-schedule frames from a drone
   /// sitting on the ground waiting to arm. Using it there declares a healthy
   /// drone stale a second before its next frame is even due.
-  final Duration groundTelemetryTimeout;
+  final Duration? groundTelemetryTimeout;
+
+  /// How long a drone may be under way to one vertex before we give up on it.
+  ///
+  /// The liveness guarantee that does not depend on telemetry existing: a step
+  /// either completes and is reported with `ARRIVED`, or this expires and the
+  /// drone comes down. Coarser than watching a 1 Hz position stream -- it
+  /// cannot see a drone drifting off mid-leg, only that the leg never finished
+  /// -- so it is a floor under the formation rather than a replacement for
+  /// [telemetryTimeout], and both run when telemetry is on.
+  ///
+  /// Generous by default: it has to cover the flight, the settle at the far end,
+  /// and the report making it back through the drone's own retry backoff.
+  final Duration legTimeout;
 
   final Duration watchdogPeriod;
 
@@ -182,6 +204,17 @@ class DemoRunner extends ChangeNotifier {
   final DroneClock _clock = DroneClock();
 
   final Map<int, DateTime> _heldSince = {};
+
+  /// The `q` of each drone's outstanding `MOVE`, withdrawn the moment the next
+  /// one is committed. A step the formation has already walked past must never
+  /// go back on the wire: a retry reuses the original `q`, so once it falls
+  /// outside the drone's retransmission window it is accepted as a fresh order
+  /// and flown — from wherever the drone has since got to, back to a vertex it
+  /// left several steps ago.
+  final Map<int, int> _pendingMove = {};
+
+  /// When each drone was last sent to a vertex, for [legTimeout].
+  final Map<int, DateTime> _steppingSince = {};
 
   /// Drones seen airborne at least once. A drone that never got off the ground
   /// cannot be landed, and must not drag the others down when we try.
@@ -211,6 +244,16 @@ class DemoRunner extends ChangeNotifier {
   /// gross errors: a drone still parked on its anchor, or drifting away.
   static const double arrivalToleranceMeters = 2.0;
 
+  /// How far an `ARRIVED`'s echoed target may sit from the step we are waiting
+  /// on before we stop believing they are the same waypoint.
+  ///
+  /// Tight on purpose, and nothing like [arrivalToleranceMeters]: this is not a
+  /// question about where the airframe ended up, it is a question about which
+  /// order the drone was answering. The coordinate is ours, echoed back at the
+  /// 7 decimal places the wire format carries -- about a centimetre -- so
+  /// anything past a rounding error is a different waypoint.
+  static const double _targetMatchMeters = 0.5;
+
   /// Distance between neighbouring vertices -- the most a drone can be out of
   /// position while still merely lagging within a leg.
   double get segmentMeters => 2 * radiusMeters * sin(pi / vertexCount);
@@ -231,6 +274,8 @@ class DemoRunner extends ChangeNotifier {
     _lastState.clear();
     _lastFix.clear();
     _heldSince.clear();
+    _pendingMove.clear();
+    _steppingSince.clear();
     _everAirborne.clear();
     _clock.clear();
     _conflicts.clear();
@@ -281,6 +326,8 @@ class DemoRunner extends ChangeNotifier {
     _lastState.clear();
     _lastFix.clear();
     _heldSince.clear();
+    _pendingMove.clear();
+    _steppingSince.clear();
     _clock.clear();
     _conflicts.clear();
     _watchdog?.cancel();
@@ -317,7 +364,6 @@ class DemoRunner extends ChangeNotifier {
     final now = DateTime.now();
     _clock.observe(droneId, telemetry, now);
 
-    final previous = _lastState[droneId];
     _lastState[droneId] = telemetry.state;
 
     final p = _progress[droneId];
@@ -326,7 +372,8 @@ class DemoRunner extends ChangeNotifier {
     // Aged by when the drone sampled it, not when it reached us -- a queued
     // frame arrives looking fresh.
     final age = _clock.ageOf(droneId, telemetry, now);
-    if (age != null && age > _silenceLimitFor(p)) {
+    final limit = _silenceLimitFor(p);
+    if (age != null && limit != null && age > limit) {
       _landInPlace(droneId, 'position was ${age.inMilliseconds / 1000}s old on arrival');
       return;
     }
@@ -345,36 +392,66 @@ class DemoRunner extends ChangeNotifier {
       return;
     }
 
-    if (telemetry.state != DroneState.hover) {
-      _checkOnCourse(droneId, p, telemetry.position);
-      return;
-    }
-    if (previous == DroneState.hover) {
-      // A run of HOVER, not the edge into one -- but still check for drift.
-      _checkOnCourse(droneId, p, telemetry.position);
-      return;
-    }
+    // Corroboration only: the formation steps on ARRIVED, never on this. A
+    // HOVER edge is not evidence of arrival -- the drone reports HOVER the
+    // instant its goto returns, which on a tight figure can be centimetres into
+    // the leg, and the whole transit can fall inside one telemetry gap. What
+    // telemetry is still good for is catching a drone that has wandered off
+    // between vertices, which nothing else watches.
+    _checkOnCourse(droneId, p, telemetry.position);
+  }
+
+  /// The drone says it is standing on the point we sent it to. This, and only
+  /// this, moves the formation.
+  ///
+  /// Checked rather than believed, in this order:
+  ///
+  /// 1. **Is it the step we are waiting on?** [ArrivedMessage.target] is the
+  ///    `MOVE`'s `to` echoed back, so an arrival at a vertex we have already
+  ///    walked past -- a report delayed on the link, or a drone acting on a
+  ///    stale order -- is caught here. Position alone could not: neighbouring
+  ///    vertices sit inside [arrivalToleranceMeters] of one another on any
+  ///    figure tight enough to be worth flying.
+  /// 2. **Did it actually get there?** [ArrivedMessage.at] against the target.
+  ///
+  /// Either failing means the drone is not where the formation's geometry says
+  /// it is, which is the one thing lockstep cannot tolerate.
+  void handleArrived(int droneId, ArrivedMessage arrived) {
+    final p = _progress[droneId];
+    if (p == null || !p.isActive) return;
+    if (p.figure.isEmpty) return;   // START_DEMO ACK still in flight
+
+    _everAirborne.add(droneId);
 
     if (p.phase == DemoPhase.starting) {
-      if (p.figure.isEmpty) return;   // START_DEMO ACK still in flight
       _reachBarrier(droneId, p, 'airborne and holding');
       return;
     }
 
-    final target = p.targetIn(p.figure);
-    if (target == null) return;
-    final off = _distance(telemetry.position, target);
-    if (off > arrivalToleranceMeters) {
-      // Stopped somewhere else: a pilot takeover, or a goto that gave up.
+    final expected = p.targetIn(p.figure);
+    if (expected == null) return;
+    final vertex = p.steps % p.figure.length;
+
+    final drift = _distance(arrived.target, expected);
+    if (drift > _targetMatchMeters) {
       _landInPlace(droneId,
-          'stopped ${off.toStringAsFixed(1)}m off vertex ${p.steps % p.figure.length}');
+          'reported arriving somewhere it was not sent: '
+          '${drift.toStringAsFixed(1)}m from vertex $vertex');
       return;
     }
-    _reachBarrier(droneId, p, 'on vertex ${p.steps % p.figure.length}');
+
+    final off = _distance(arrived.at, expected);
+    if (off > arrivalToleranceMeters) {
+      _landInPlace(droneId,
+          'stopped ${off.toStringAsFixed(1)}m off vertex $vertex');
+      return;
+    }
+    _reachBarrier(droneId, p, 'on vertex $vertex');
   }
 
   /// A drone has reached the vertex it was sent to and is now standing still.
   void _reachBarrier(int droneId, DemoProgress p, String why) {
+    _steppingSince.remove(droneId);
     _progress[droneId] = p.copyWith(phase: DemoPhase.holding, detail: why);
     _heldSince[droneId] = DateTime.now();
     _conflicts.setTarget(droneId, null);   // parked, so it is not going anywhere
@@ -512,10 +589,28 @@ class DemoRunner extends ChangeNotifier {
 
     _heldSince.remove(droneId);
     _conflicts.setTarget(droneId, target);
+    _steppingSince[droneId] = DateTime.now();
     _progress[droneId] = p.copyWith(
         phase: DemoPhase.stepping, steps: steps, detail: 'to vertex $vertex');
-    unawaited(
-        _tracker.send((q) => MoveMessage(seq: q, target: target), dest: droneId));
+
+    // The drone was seen standing on the previous vertex, so that MOVE has
+    // already done its job whether or not its ACK ever reached us.
+    final superseded = _pendingMove.remove(droneId);
+    if (superseded != null) _tracker.withdraw(superseded);
+
+    unawaited(_tracker
+        .send((q) => MoveMessage(seq: q, target: target), dest: droneId)
+        .then((seq) {
+      // Anything that happened while this was going out wins: by the time we
+      // learn the `q`, the drone may already have been stepped again or landed,
+      // and in both cases this MOVE is the stale one.
+      final current = _progress[droneId];
+      if (current == null || !current.isActive || current.steps != steps) {
+        _tracker.withdraw(seq);
+        return;
+      }
+      _pendingMove[droneId] = seq;
+    }));
   }
 
   /// Still somewhere it could plausibly be, given the leg it was sent on?
@@ -543,10 +638,26 @@ class DemoRunner extends ChangeNotifier {
     final now = DateTime.now();
 
     for (final id in _formation.toList()) {
+      final p = _progress[id]!;
+
+      // Under way to a vertex for too long. Independent of telemetry, so this
+      // is what holds the floor when the operator turns TELEM down or off.
+      final left = _steppingSince[id];
+      if (p.phase == DemoPhase.stepping &&
+          left != null &&
+          now.difference(left) > legTimeout) {
+        _landInPlace(id, 'no arrival reported within '
+            '${legTimeout.inSeconds}s of being sent to vertex '
+            '${p.steps % (p.figure.isEmpty ? 1 : p.figure.length)}');
+        continue;
+      }
+
+      final limit = _silenceLimitFor(p);
       final since = _lastFix[id];
+      if (limit == null) continue;   // telemetry is advisory; legTimeout covers it
       if (since == null) continue;   // not heard from yet; ACK timeouts cover it
       final silent = now.difference(since);
-      if (silent > _silenceLimitFor(_progress[id]!)) {
+      if (silent > limit) {
         _landInPlace(id, 'no position for ${silent.inMilliseconds / 1000}s');
       }
     }
@@ -622,6 +733,18 @@ class DemoRunner extends ChangeNotifier {
     if (p == null) return;
 
     if (failure.message is LandMessage) {
+      // BAD_STATE is the drone saying it is already coming down -- it refuses
+      // LAND in LANDING, and it lands itself on its own idle timeout. That is
+      // the outcome the LAND was asking for, so it is not a reason to abort
+      // anyone: treating it as unreachability would land a whole healthy
+      // formation because one drone got there first.
+      if (failure.kind == AckFailureKind.rejected &&
+          failure.reason == NackError.badState) {
+        logInfo('Drone ${failure.droneId} was already landing - LAND not needed',
+            _tag);
+        _tracker.dismissFailure(failure.droneId);
+        return;
+      }
       // Unreachable and still at the formation's altitude, so nothing is
       // guaranteed for anyone: everybody comes down.
       _escalate(failure.droneId, failure.description);
@@ -658,7 +781,11 @@ class DemoRunner extends ChangeNotifier {
 
     _progress[droneId] = p.copyWith(phase: DemoPhase.landing, detail: reason);
     _heldSince.remove(droneId);
+    _steppingSince.remove(droneId);
     _conflicts.setTarget(droneId, null);
+    // A MOVE still being chased would fly it off the spot it is coming down on.
+    final abandoned = _pendingMove.remove(droneId);
+    if (abandoned != null) _tracker.withdraw(abandoned);
     logError('Drone $droneId out of formation: $reason - landing in place', _tag);
     notifyListeners();
 
@@ -688,8 +815,9 @@ class DemoRunner extends ChangeNotifier {
     _barrierSince = null;
   }
 
-  /// How long this drone may go quiet before we stop believing its position.
-  Duration _silenceLimitFor(DemoProgress p) =>
+  /// How long this drone may go quiet before we stop believing its position,
+  /// or null when telemetry is advisory and silence proves nothing.
+  Duration? _silenceLimitFor(DemoProgress p) =>
       p.phase == DemoPhase.starting ? groundTelemetryTimeout : telemetryTimeout;
 
   static bool _isGrounded(DroneState state) =>
