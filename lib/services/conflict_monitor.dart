@@ -4,54 +4,19 @@ import 'package:latlong2/latlong.dart';
 
 /// Predicts whether two drones are about to get too close, from position alone.
 ///
-/// This is what stands in for the lockstep barrier when the operator lets the
-/// drones advance independently. Lockstep guarantees separation geometrically;
-/// off-step there is no guarantee, so every step has to be checked.
+/// Stands in for the lockstep barrier when drones advance independently: there
+/// is no geometric guarantee off-step, so every step is checked.
 ///
-/// ## Measured uncertainty, and why there is still a clearance number
+/// Each drone is treated as a disc sized by three things -- its reported `acc`,
+/// how far it could have moved since that fix was taken, and its speed -- then
+/// both discs are run forward along their commanded legs and the closest
+/// approach compared against [clearanceMeters].
 ///
-/// TELEM carries `acc`, the GPS receiver's own 1-sigma horizontal accuracy, and
-/// [observe] folds it into that drone's uncertainty — so a pair with poor fixes
-/// is required to stay further apart than a pair with good ones, automatically.
-///
-/// It is not the whole story, because it is measured *before* the EKF fuses IMU
-/// and optical flow. The filter's own 1-sigma — `AP_AHRS::get_pos_vel_uncertainty`,
-/// straight off the state covariance, which would account for all of it — never
-/// reaches us: ArduPilot sends neither `ESTIMATOR_STATUS` nor
-/// `GLOBAL_POSITION_INT_COV`, the variances in `EKF_STATUS_REPORT` are
-/// dimensionless test ratios, and it is not in the Lua bindings either. So `acc`
-/// bounds the error rather than measuring it. Pessimistic is the safe direction
-/// for a separation bubble.
-///
-/// [clearanceMeters] therefore stays: it is the operator's margin *on top of*
-/// the measured uncertainty, covering the airframe, how loosely the drone tracks
-/// a line, and how close they are willing to watch two aircraft fly.
-///
-/// Optical flow does not shrink any of this. Flow constrains *velocity* and
-/// short-term drift; absolute latitude and longitude stay GPS-anchored. It makes
-/// the drone fly its leg more precisely and makes [observe]'s speed trustworthy.
-///
-/// ## What it computes
-///
-/// Three things are used to size each drone's uncertainty:
-///
-///  * **Speed**, reported by the drone's own EKF (`vel` on TELEM) when it is
-///    available, and inferred from consecutive fixes only when it is not. The
-///    reported one is worth having: it is the estimate the autopilot navigates
-///    on, it is current rather than half a sample behind, and with optical flow
-///    fused into it (`EK3_SRC1_VELXY = 5`) it is accurate to a few cm/s. An
-///    inferred speed is carried with an extra margin, because it can be wrong
-///    in the direction that hides a conflict.
-///  * **Staleness**. A fix that is one second old, from a drone doing 2 m/s, has
-///    the drone anywhere in a 2 m circle. That radius is added to the required
-///    separation rather than hoped away.
-///  * **Reported accuracy**, `acc`, as described above.
-///
-/// Prediction is a straight run to the commanded vertex at the observed speed,
-/// stopping there — which is what the drone actually does. Sampling that forward
-/// beats a closed-form closest-approach because the stop at the vertex makes the
-/// motion piecewise, and getting the corner case wrong here is not a rounding
-/// error.
+/// `acc` is the GPS receiver's own 1-sigma, taken before the EKF fuses IMU and
+/// flow, so it bounds the error rather than measuring it. ArduPilot does not
+/// publish the filter's own figure at all (`EKF_STATUS_REPORT` carries
+/// dimensionless test ratios, and `ESTIMATOR_STATUS` is not sent), so
+/// [clearanceMeters] stays as the operator's margin on top.
 class ConflictMonitor {
   ConflictMonitor({
     this.clearanceMeters = 4.0,
@@ -79,25 +44,11 @@ class ConflictMonitor {
 
   final Map<int, _Track> _tracks = {};
 
-  /// Record where a drone is, how fast it says it is going, and when it sampled
-  /// that.
+  /// Record where a drone is, how fast it is going, and how old the fix was.
   ///
-  /// [reportedSpeed] is the drone's own ground speed in m/s, from the EKF. Use
-  /// it when it is there: differencing two 1 Hz positions gives a number that is
-  /// half a sample behind, noisy at the scale of GPS jitter, and floored at zero
-  /// when two fixes happen to land on the same spot. The vehicle's own estimate
-  /// has none of those problems — and with optical flow fused into it, it is
-  /// good to a few cm/s.
-  ///
-  /// [accuracyMeters] is the drone's reported horizontal accuracy. It is added
-  /// to that drone's uncertainty, so a pair with poor fixes has to stay further
-  /// apart than a pair with good ones. Absent, it contributes nothing and
-  /// [clearanceMeters] carries the whole burden — which is what the operator's
-  /// number was always for.
-  ///
-  /// [sampleAge] is how old the fix was on arrival (from DroneClock); pass null
-  /// when unknown, and it is treated as fresh — staleness is then somebody
-  /// else's problem, not silently folded in as safety margin here.
+  /// [reportedSpeed] is preferred over differencing positions, which lags by
+  /// half a sample and reads zero when two fixes land on the same spot. Omitted
+  /// values contribute nothing rather than being guessed at.
   void observe(int droneId, LatLng position, DateTime at,
       {Duration? sampleAge, double? reportedSpeed, double? accuracyMeters}) {
     final previous = _tracks[droneId];
@@ -156,11 +107,10 @@ class ConflictMonitor {
     final horizonSeconds = horizon.inMilliseconds / 1000.0;
     for (var i = 0; i <= stepCount; i++) {
       final t = horizonSeconds * i / stepCount;
-      // Each drone has already been flying for however long its fix has been
-      // in transit, so the clock starts before now, not at it.
+      // The clock starts before now: each drone has already been flying for as
+      // long as its fix spent in transit.
       final pa = _advance(ta.position, targetA, ta.speed * (t + ta.ageSeconds));
       final pb = _advance(tb.position, targetB, tb.speed * (t + tb.ageSeconds));
-      // Where it could be, not just where it says it is.
       final margin = ta.uncertaintyMeters + tb.uncertaintyMeters;
       final separation = _distance(pa, pb) - margin;
       if (separation < worst) worst = separation;

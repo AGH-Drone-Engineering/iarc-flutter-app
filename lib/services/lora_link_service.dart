@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:usb_serial/usb_serial.dart';
 
 import '../models/mission_message.dart';
@@ -28,9 +28,20 @@ class LoraLinkService implements MissionTransport {
   UsbPort? _port;
   UsbDevice? _device;
   StreamSubscription<Uint8List>? _rxSub;
+  StreamSubscription<UsbEvent>? _usbSub;
   Timer? _pollTimer;
   bool _closing = false;
   int _txCounter = 0;
+
+  /// Consecutive failed reads/writes. Unplugging the board does not reliably
+  /// close `inputStream`, so every I/O just keeps failing: without this the
+  /// link stays "connected" for ever, polling a port that is gone and writing a
+  /// log line for each attempt.
+  int _ioFailures = 0;
+
+  /// Failures in a row that mean the board is gone rather than busy. Poll
+  /// interval is 200 ms, so this is under a second of retrying.
+  static const int _ioFailureLimit = 4;
 
   final _parser = LoraFrameParser();
   final _queue = <_Transaction>[];
@@ -111,6 +122,15 @@ class LoraLinkService implements MissionTransport {
         },
       );
 
+      _usbSub = UsbSerial.usbEventStream?.listen((event) {
+        if (event.event != UsbEvent.ACTION_USB_DETACHED) return;
+        final gone = event.device;
+        if (gone != null && gone.deviceId != _device?.deviceId) return;
+        logWarn('USB device detached', _tag);
+        unawaited(disconnect());
+      });
+
+      _ioFailures = 0;
       _setState(LinkState.connected,
           'Connected: ${device.productName ?? device.deviceName} @ $baud bps');
       logInfo('Connected to ${device.productName ?? device.deviceName}', _tag);
@@ -143,6 +163,8 @@ class LoraLinkService implements MissionTransport {
 
     await _rxSub?.cancel();
     _rxSub = null;
+    await _usbSub?.cancel();
+    _usbSub = null;
     try {
       await _port?.close();
     } catch (_) {}
@@ -226,10 +248,31 @@ class LoraLinkService implements MissionTransport {
     } on _LinkClosedException {
       logTrace(_tag, 'poll aborted: link closed');
     } on Exception catch (e) {
-      logError('Poll failed: $e', _tag);
-      _schedulePoll(pollInterval);
+      if (_noteIoFailure('Poll failed: $e')) _schedulePoll(pollInterval);
     }
   }
+
+  /// Record one failed transfer. Returns false once the board is presumed gone,
+  /// at which point the caller must stop retrying.
+  ///
+  /// Only the first failure of a run is logged. A detached board fails every
+  /// 200 ms poll, and a log line per attempt buries whatever came before it.
+  bool _noteIoFailure(String what) {
+    _ioFailures++;
+    if (_ioFailures == 1) logError(what, _tag);
+    if (_ioFailures < _ioFailureLimit) return true;
+
+    logError('$_ioFailures transfers failed in a row - treating the board as '
+        'disconnected', _tag);
+    unawaited(disconnect());
+    return false;
+  }
+
+  @visibleForTesting
+  bool noteIoFailureForTest(String what) => _noteIoFailure(what);
+
+  @visibleForTesting
+  int get ioFailuresForTest => _ioFailures;
 
   void _handlePayload(int from, Uint8List payload) {
     final text = utf8.decode(payload, allowMalformed: true);
@@ -293,14 +336,17 @@ class LoraLinkService implements MissionTransport {
     final port = _port;
     if (port == null) return;
     final bytes = frame.encode();
-    unawaited(
-      port.write(bytes).catchError((Object e) {
-        logError('Write failed: $e', _tag);
-      }),
-    );
+    unawaited(() async {
+      try {
+        await port.write(bytes);
+      } catch (e) {
+        _noteIoFailure('Write failed: $e');
+      }
+    }());
   }
 
   void _onBytes(Uint8List data) {
+    _ioFailures = 0;        // bytes arriving is the board answering for itself
     final result = _parser.feed(data);
 
     if (result.noise.isNotEmpty) {

@@ -2,24 +2,16 @@ import '../models/mission_message.dart';
 
 /// Ages a drone's position fixes without a shared clock.
 ///
-/// The drone stamps every TELEM with `ts`: milliseconds on its own monotonic
-/// clock, taken when it read the position. That number means nothing to us on
-/// its own -- a Pi in the field has no RTC and no network, so its calendar time
-/// is whatever it booted with, and in practice it has been hours off ours.
+/// TELEM carries `ts`: milliseconds on the drone's own monotonic clock, taken
+/// when it read the position. A Pi in the field has no RTC, so its calendar
+/// time is meaningless to us -- but age is recoverable. `receivedAt - ts` is the
+/// clock offset plus that frame's queueing delay; queueing is never negative, so
+/// the smallest value ever seen is the best estimate of the pure offset, and
+/// anything above it is transit delay.
 ///
-/// What we can recover is *age*. For each frame, `receivedAt - ts` is the true
-/// clock offset plus however long that frame spent in the radio queue. The
-/// queue delay is never negative, so the smallest value we have ever seen is
-/// our best estimate of the pure offset. Everything above that floor is transit
-/// delay for that particular frame.
-///
-/// This matters because on a polled LoRa link arrival time lies: a frame can
-/// sit in the ESP's queue for seconds, and a position that arrives "just now"
-/// may describe where the drone was several seconds ago. For a formation held
-/// together by position, believing a stale fix is the dangerous failure.
-///
-/// A drone that restarts sends `ts` backwards; that is detected and the
-/// estimate starts again rather than reporting impossible ages forever.
+/// This matters because arrival time lies on a polled link: a frame can sit in
+/// the ESP's queue for seconds, so a position that arrives "just now" may
+/// describe where the drone was several seconds ago.
 class DroneClock {
   DroneClock({this.rebootSlack = const Duration(seconds: 30)});
 

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:flutter_esp_android_communication/models/mission_message.dart';
@@ -36,6 +38,7 @@ final _anchors = {1: _anchorA, 2: _anchorB};
   int maxSteps = 200,
   Duration barrierTimeout = const Duration(seconds: 30),
   Duration telemetryTimeout = const Duration(seconds: 30),
+  Duration groundTelemetryTimeout = const Duration(seconds: 30),
   Duration watchdogPeriod = const Duration(milliseconds: 15),
   bool lockstep = true,
   double clearanceMeters = 4.0,
@@ -55,6 +58,7 @@ final _anchors = {1: _anchorA, 2: _anchorB};
       clearanceMeters: clearanceMeters,
       barrierTimeout: barrierTimeout,
       telemetryTimeout: telemetryTimeout,
+      groundTelemetryTimeout: groundTelemetryTimeout,
       watchdogPeriod: watchdogPeriod,
     ),
   );
@@ -131,6 +135,101 @@ Future<({CommandTracker tracker, DemoRunner runner})> launched(
 }
 
 void main() {
+  // ---- regressions from raspi.log 2026-08-10 03:12 ------------------------
+  // One drone, lockstep on, no MOVE ever sent: the app landed it 4.5 s into the
+  // demo, before it had even finished climbing.
+
+  test('a drone still reporting IDLE just after START_DEMO is not landed',
+      () async {
+    final sender = FakeSender();
+    final (:tracker, :runner) = build(sender, drones: [1]);
+
+    await runner.start([1], 3.0);
+    ackLast(tracker, sender, 1);
+    await pump();
+
+    // The drone has not armed yet, so IDLE is the correct thing for it to say
+    // -- and on a polled radio that frame can arrive seconds after we sent the
+    // command. ARMING follows, still not airborne.
+    telem(runner, 1, DroneState.idle, _anchorA);
+    telem(runner, 1, DroneState.arming, _anchorA);
+    await pump();
+
+    expect(runner.progressFor(1)!.phase, DemoPhase.starting);
+    expect(sender.to(1).whereType<LandMessage>(), isEmpty,
+        reason: 'landing a drone for being on the ground before takeoff aborts '
+            'every demo before it begins');
+
+    // ... and it still runs normally once it is up.
+    telem(runner, 1, DroneState.takeoff, _anchorA);
+    telem(runner, 1, DroneState.hover, _anchorA);
+    await pump();
+    expect(runner.progressFor(1)!.steps, 0);
+    expect(sender.movesTo(1), hasLength(1));
+
+    runner.dispose();
+    tracker.dispose();
+  });
+
+  test('the ground telemetry cadence is not mistaken for silence', () async {
+    final sender = FakeSender();
+    // PROTOCOL.md §6: 5 s between frames on the ground against 1 s airborne.
+    // The airborne limit must not be applied to a drone that has not taken off.
+    final (:tracker, :runner) = build(sender,
+        drones: [1],
+        telemetryTimeout: const Duration(milliseconds: 60),
+        groundTelemetryTimeout: const Duration(milliseconds: 500));
+
+    await runner.start([1], 3.0);
+    ackLast(tracker, sender, 1);
+    telem(runner, 1, DroneState.idle, _anchorA);
+    await settle(200);        // longer than the airborne limit, well inside ground
+
+    expect(runner.progressFor(1)!.phase, DemoPhase.starting);
+    expect(sender.to(1).whereType<LandMessage>(), isEmpty);
+
+    runner.dispose();
+    tracker.dispose();
+  });
+
+  test('drones that never answer do not take down the one that flies',
+      () async {
+    final sender = FakeSender();
+    // A broadcast START_DEMO addresses all four even when three are switched
+    // off. Their unanswerable LANDs used to escalate into landing the formation.
+    final (:tracker, :runner) = build(sender, drones: [1, 2, 3, 4]);
+
+    await runner.start([1, 2, 3, 4], 3.0);
+    ackLast(tracker, sender, 1);
+    becomeAirborne(runner, 1);
+    await pump();
+    expect(runner.progressFor(1)!.phase, DemoPhase.holding,
+        reason: 'waiting at the barrier for three drones that do not exist');
+
+    // Keep the real drone answering while the silent ones exhaust their
+    // retries -- otherwise its own MOVE times out and the test lands it itself.
+    final keepAlive = Timer.periodic(const Duration(milliseconds: 10), (_) {
+      if (tracker.isAwaitingAck(1)) ackLast(tracker, sender, 1);
+    });
+    await settle(400);
+    keepAlive.cancel();
+
+    for (final id in [2, 3, 4]) {
+      expect(runner.progressFor(id)!.phase, DemoPhase.stopped,
+          reason: 'drone $id never flew, so there is nothing to land');
+      expect(runner.progressFor(id)!.detail, contains('never airborne'));
+      expect(sender.to(id).whereType<LandMessage>(), isEmpty);
+    }
+
+    expect(sender.to(1).whereType<LandMessage>(), isEmpty,
+        reason: 'the drone that is actually flying must be left alone');
+    expect(runner.progressFor(1)!.steps, greaterThanOrEqualTo(0));
+    expect(sender.movesTo(1), isNotEmpty, reason: 'and it should be stepping');
+
+    runner.dispose();
+    tracker.dispose();
+  });
+
   test('nobody steps until the whole formation is at the barrier', () async {
     final sender = FakeSender();
     final (:tracker, :runner) = build(sender);

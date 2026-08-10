@@ -102,6 +102,7 @@ class DemoRunner extends ChangeNotifier {
     double clearanceMeters = 4.0,
     this.barrierTimeout = const Duration(seconds: 6),
     this.telemetryTimeout = const Duration(seconds: 4),
+    this.groundTelemetryTimeout = const Duration(seconds: 12),
     this.watchdogPeriod = const Duration(milliseconds: 500),
   })  : _tracker = tracker,
         _conflicts = ConflictMonitor(clearanceMeters: clearanceMeters) {
@@ -149,6 +150,15 @@ class DemoRunner extends ChangeNotifier {
   /// 1 Hz, so this is several missed frames, not a hair trigger.
   final Duration telemetryTimeout;
 
+  /// The same, for a drone that has not taken off yet.
+  ///
+  /// Separate because the cadence is: PROTOCOL.md §6 has the drone report every
+  /// 5 s while IDLE or LANDED against 1 s airborne, so [telemetryTimeout] is
+  /// shorter than the gap between two perfectly on-schedule frames from a drone
+  /// sitting on the ground waiting to arm. Using it there declares a healthy
+  /// drone stale a second before its next frame is even due.
+  final Duration groundTelemetryTimeout;
+
   final Duration watchdogPeriod;
 
   final Map<int, DemoProgress> _progress = {};
@@ -157,6 +167,10 @@ class DemoRunner extends ChangeNotifier {
   final DroneClock _clock = DroneClock();
 
   final Map<int, DateTime> _heldSince = {};
+
+  /// Drones seen airborne at least once. A drone that never got off the ground
+  /// cannot be landed, and must not drag the others down when we try.
+  final Set<int> _everAirborne = {};
 
   Timer? _watchdog;
   DateTime? _barrierSince;
@@ -201,6 +215,7 @@ class DemoRunner extends ChangeNotifier {
     _lastState.clear();
     _lastFix.clear();
     _heldSince.clear();
+    _everAirborne.clear();
     _clock.clear();
     _conflicts.clear();
     _barrierSince = null;
@@ -270,11 +285,8 @@ class DemoRunner extends ChangeNotifier {
       return;
     }
 
-    // WAYPOINT_REACHED is not what advances the formation any more. It is sent
-    // once and never acknowledged -- one lost frame on the radio and a drone
-    // silently stops stepping -- and it carries no position, so it cannot show
-    // that the drone is where the formation needs it to be. Telemetry answers
-    // both: it repeats, and it says where. The event stays as an operator hint.
+    // Not an arrival: sent once, never acknowledged, and carries no position.
+    // Telemetry repeats and says where. Kept as an operator hint.
     if (event == MissionEvent.waypointReached) {
       logTrace(_tag, 'drone $droneId reported WAYPOINT_REACHED');
     }
@@ -291,11 +303,10 @@ class DemoRunner extends ChangeNotifier {
     final p = _progress[droneId];
     if (p == null || !p.isActive) return;
 
-    // Age the fix by when the drone SAMPLED it, not when it reached us: on a
-    // polled radio a frame can sit in a queue, and a position that just arrived
-    // may describe where the drone was several seconds ago.
+    // Aged by when the drone sampled it, not when it reached us -- a queued
+    // frame arrives looking fresh.
     final age = _clock.ageOf(droneId, telemetry, now);
-    if (age != null && age > telemetryTimeout) {
+    if (age != null && age > _silenceLimitFor(p)) {
       _landInPlace(droneId, 'position was ${age.inMilliseconds / 1000}s old on arrival');
       return;
     }
@@ -305,7 +316,11 @@ class DemoRunner extends ChangeNotifier {
         reportedSpeed: telemetry.groundSpeed,
         accuracyMeters: telemetry.accuracyMeters);
 
-    if (_isGrounded(telemetry.state)) {
+    if (telemetry.state.isAirborne) _everAirborne.add(droneId);
+
+    // Only a fault once it should be flying: between START_DEMO and the climb
+    // IDLE and ARMING are correct, and those frames can arrive late.
+    if (p.phase != DemoPhase.starting && _isGrounded(telemetry.state)) {
       _landInPlace(droneId, 'reported ${telemetry.state.wire} mid-formation');
       return;
     }
@@ -315,8 +330,7 @@ class DemoRunner extends ChangeNotifier {
       return;
     }
     if (previous == DroneState.hover) {
-      // A run of HOVER, not the edge into one. Still worth checking it has not
-      // drifted off the vertex while the formation waits for the others.
+      // A run of HOVER, not the edge into one -- but still check for drift.
       _checkOnCourse(droneId, p, telemetry.position);
       return;
     }
@@ -331,8 +345,7 @@ class DemoRunner extends ChangeNotifier {
     if (target == null) return;
     final off = _distance(telemetry.position, target);
     if (off > arrivalToleranceMeters) {
-      // Stopped, but not where we sent it. A leg that ended early -- a pilot
-      // takeover, or a goto that gave up -- leaves the drone out of formation.
+      // Stopped somewhere else: a pilot takeover, or a goto that gave up.
       _landInPlace(droneId,
           'stopped ${off.toStringAsFixed(1)}m off vertex ${p.steps % p.figure.length}');
       return;
@@ -472,7 +485,7 @@ class DemoRunner extends ChangeNotifier {
       final since = _lastFix[id];
       if (since == null) continue;   // not heard from yet; ACK timeouts cover it
       final silent = now.difference(since);
-      if (silent > telemetryTimeout) {
+      if (silent > _silenceLimitFor(_progress[id]!)) {
         _landInPlace(id, 'no position for ${silent.inMilliseconds / 1000}s');
       }
     }
@@ -491,10 +504,8 @@ class DemoRunner extends ChangeNotifier {
       return;
     }
 
-    // Off-step: nothing guarantees separation, so it has to be watched. A pair
-    // predicted inside clearance has both drones landed -- with fixes this
-    // stale we cannot reliably say which one is the mover, and guessing wrong
-    // is the one mistake that does not degrade gracefully.
+    // Both of a conflicting pair are landed: at this fix quality we cannot say
+    // which one is the mover, and guessing wrong does not degrade gracefully.
     for (final conflict in _conflicts.conflicts(_formation)) {
       final gap = conflict.separationMeters.toStringAsFixed(1);
       final limit = clearanceMeters.toStringAsFixed(1);
@@ -548,9 +559,8 @@ class DemoRunner extends ChangeNotifier {
     if (p == null) return;
 
     if (failure.message is LandMessage) {
-      // We could not tell it to come down and it is still at the formation's
-      // altitude. Nothing about the rest of the formation is guaranteed any
-      // more, so everybody comes down.
+      // Unreachable and still at the formation's altitude, so nothing is
+      // guaranteed for anyone: everybody comes down.
       _escalate(failure.droneId, failure.description);
       return;
     }
@@ -569,6 +579,20 @@ class DemoRunner extends ChangeNotifier {
     final p = _progress[droneId];
     if (p == null || !p.isActive) return;
 
+    if (!_everAirborne.contains(droneId)) {
+      // Never left the ground -- usually a drone that is switched off, which a
+      // broadcast START_DEMO still addresses. A LAND nobody answers would
+      // escalate into aborting the drones that ARE flying.
+      _progress[droneId] =
+          p.copyWith(phase: DemoPhase.stopped, detail: 'never airborne: $reason');
+      _heldSince.remove(droneId);
+      logWarn('Drone $droneId never took off ($reason) - dropped from the '
+          'formation, not landed', _tag);
+      notifyListeners();
+      _releaseBarrier();
+      return;
+    }
+
     _progress[droneId] = p.copyWith(phase: DemoPhase.landing, detail: reason);
     _heldSince.remove(droneId);
     _conflicts.setTarget(droneId, null);
@@ -577,8 +601,7 @@ class DemoRunner extends ChangeNotifier {
 
     unawaited(_tracker.send((q) => LandMessage(seq: q), dest: droneId));
 
-    // The rest keep their lockstep, so they are still safe -- but whoever is
-    // left must not sit waiting at a barrier for a drone that has left it.
+    // Whoever is left must not wait at a barrier for a drone that has gone.
     _releaseBarrier();
   }
 
@@ -599,6 +622,10 @@ class DemoRunner extends ChangeNotifier {
     _watchdog = null;
     _barrierSince = null;
   }
+
+  /// How long this drone may go quiet before we stop believing its position.
+  Duration _silenceLimitFor(DemoProgress p) =>
+      p.phase == DemoPhase.starting ? groundTelemetryTimeout : telemetryTimeout;
 
   static bool _isGrounded(DroneState state) =>
       state == DroneState.idle ||
