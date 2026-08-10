@@ -103,7 +103,7 @@ class DemoRunner extends ChangeNotifier {
     this.settleDelay = Duration.zero,
     this.barrierTimeout = const Duration(seconds: 6),
     this.telemetryTimeout = const Duration(seconds: 4),
-    this.groundTelemetryTimeout = const Duration(seconds: 12),
+    this.groundTelemetryTimeout = const Duration(seconds: 40),
     this.legTimeout = const Duration(seconds: 30),
     this.watchdogPeriod = const Duration(milliseconds: 500),
   })  : _tracker = tracker,
@@ -176,11 +176,19 @@ class DemoRunner extends ChangeNotifier {
 
   /// The same, for a drone that has not taken off yet.
   ///
-  /// Separate because the cadence is: PROTOCOL.md §6 has the drone report every
-  /// 5 s while IDLE or LANDED against 1 s airborne, so [telemetryTimeout] is
-  /// shorter than the gap between two perfectly on-schedule frames from a drone
-  /// sitting on the ground waiting to arm. Using it there declares a healthy
-  /// drone stale a second before its next frame is even due.
+  /// Separate, and far longer, for two reasons. The cadence is slower --
+  /// PROTOCOL.md §6 has the drone report every 5 s while IDLE or LANDED against
+  /// 1 s airborne -- so [telemetryTimeout] would declare a healthy drone stale
+  /// before its next frame is even due.
+  ///
+  /// More importantly, arming and climbing is the one stretch where a drone
+  /// legitimately cannot report at all: the mission thread is inside blocking
+  /// flight-controller calls, and the drone stops sending `TELEM` rather than
+  /// repeat a position it knows is stale. A takeoff may take the better part of
+  /// its 30 s timeout. Nothing is gained by being impatient here -- a drone that
+  /// has never been airborne cannot be landed, so all this timeout can do is
+  /// drop it from the formation, and dropping one that is halfway up its climb
+  /// is the failure, not the protection.
   final Duration? groundTelemetryTimeout;
 
   /// How long a drone may be under way to one vertex before we give up on it.
