@@ -148,8 +148,8 @@ class CommandTracker extends ChangeNotifier {
     final group = _groups.remove(seq);
     if (group == null) return;
     group.timer?.cancel();
-    logTrace(_tag, '${group.message.type} q=$seq withdrawn after '
-        '${group.attempts} attempt(s) — superseded');
+    logInfo('${group.message.type} q=$seq withdrawn after '
+        '${group.attempts} attempt(s) — superseded', _tag);
     notifyListeners();
   }
 

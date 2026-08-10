@@ -114,4 +114,71 @@ void main() {
 
     expect(app.mines, hasLength(2));
   });
+
+  // ---- ARRIVED is a report too, and it drives the formation ----------------
+
+  ArrivedMessage arrived(int seq, LatLng target, {LatLng? at}) => ArrivedMessage(
+        seq: seq,
+        target: target,
+        at: at ?? target,
+        speed: 0.05,
+      );
+
+  test('an ARRIVED is acknowledged like any other report', () async {
+    await link.deliver(4, arrived(31, const LatLng(50.062975, 19.9157)));
+
+    expect(acksTo(4), hasLength(1));
+    expect(acksTo(4).single.respondingTo, 31,
+        reason: 'without this the drone resends the arrival for ever');
+  });
+
+  test('a repeated ARRIVED is acknowledged again but acted on once', () async {
+    await app.demo.start([4], 3.0);
+    // The START_DEMO ACK anchors the figure.
+    final start = link.sent.last.message;
+    app.tracker.handleIncoming(
+      4,
+      AckMessage(
+        seq: 900,
+        respondingTo: start.seq,
+        position: const LatLng(50.062975, 19.9157),
+      ),
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    final figure = app.demo.progressFor(4)!.figure;
+    expect(figure, isNotEmpty, reason: 'anchored');
+
+    // Airborne and holding over the anchor: the opening barrier.
+    await link.deliver(4, arrived(31, const LatLng(50.062975, 19.9157)));
+    await Future<void>.delayed(Duration.zero);
+    expect(app.demo.progressFor(4)!.steps, 0);
+
+    await link.deliver(4, arrived(32, figure[0]));
+    await Future<void>.delayed(Duration.zero);
+    expect(app.demo.progressFor(4)!.steps, 1);
+
+    // Our ACK was lost, so the drone says vertex 0 again. It is still standing
+    // there; stepping again would put the formation ahead of the airframe.
+    await link.deliver(4, arrived(32, figure[0]));
+    await Future<void>.delayed(Duration.zero);
+
+    expect(app.demo.progressFor(4)!.steps, 1, reason: 'still walking to vertex 1');
+    expect(acksTo(4).where((a) => a.respondingTo == 32), hasLength(2),
+        reason: 'every repeat is answered');
+  });
+
+  test('a drone whose sequence counter restarts is not mistaken for a repeat',
+      () async {
+    // Exactly what phone.log 2026-08-10 shows at 14:02:25: the Pi script was
+    // restarted mid-session and q went 119 -> 1 while the app kept running.
+    await link.deliver(4, mine(118));
+    await link.deliver(4, mine(119, tag: 8, lat: 50.063975));
+    expect(app.mines, hasLength(2));
+
+    await link.deliver(4, mine(1, tag: 9, lat: 50.064975));
+
+    expect(app.mines, hasLength(3),
+        reason: 'a restarted counter must not silence the drone that restarted');
+  });
 }

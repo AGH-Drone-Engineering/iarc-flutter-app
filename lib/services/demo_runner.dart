@@ -456,7 +456,7 @@ class DemoRunner extends ChangeNotifier {
     _heldSince[droneId] = DateTime.now();
     _conflicts.setTarget(droneId, null);   // parked, so it is not going anywhere
     if (_lockedLockstep) _barrierSince ??= DateTime.now();
-    logTrace(_tag, 'drone $droneId holding ($why)');
+    logInfo('Drone $droneId holding ($why)', _tag);
     notifyListeners();
     _releaseBarrier();
   }
@@ -504,8 +504,8 @@ class DemoRunner extends ChangeNotifier {
     for (final id in formation) {
       _dispatch(id, steps);
     }
-    logTrace(_tag, 'formation -> vertex ${steps % vertexCount} '
-        '(${formation.length} drone(s))');
+    logInfo('Formation -> vertex ${steps % vertexCount} '
+        '(${formation.length} drone(s))', _tag);
     notifyListeners();
   }
 

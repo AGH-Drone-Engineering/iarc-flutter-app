@@ -292,16 +292,50 @@ class AppState extends ChangeNotifier {
   /// znaczy, że poprzedniego potwierdzenia nie dostał. Zapisujemy natomiast
   /// tylko za pierwszym razem - inaczej jedna mina zgłoszona trzy razy byłaby
   /// trzema minami.
+  final Map<int, int> _lastReportSeq = {};
+
+  /// O tyle niższy numer uznajemy za restart licznika, a nie za spóźnioną
+  /// ramkę. Raporty idą po kilka na przelot, więc okno jest wielokrotnie
+  /// szersze niż jakiekolwiek realne wyprzedzenie na łączu.
+  static const int _seqRestartWindow = 64;
+
+  /// Licznik `q` należy do drona i startuje od 1 przy każdym uruchomieniu
+  /// skryptu na Pi. W logu z 2026-08-10 widać to wprost: 119 -> 1 o 14:02:25,
+  /// w środku jednej sesji aplikacji.
+  ///
+  /// Pamięć powtórek jest kluczowana `(dron, q)`, więc bez wykrycia restartu
+  /// pierwsze kilkadziesiąt meldunków po restarcie drona wyglądałoby jak
+  /// powtórki sprzed restartu i zostałoby po cichu wyrzucone. Dla MINE/SCAN
+  /// znaczyłoby to zgubioną minę; dla ARRIVED - szyk, który nigdy nie rusza,
+  /// bo dolot dociera, jest potwierdzany i nigdzie nie trafia.
+  void _forgetReportsIfCounterRestarted(int from, int seq) {
+    final highest = _lastReportSeq[from];
+    if (highest != null && seq + _seqRestartWindow < highest) {
+      final prefix = '$from/';
+      _reportsSeen.removeWhere((k) => k.startsWith(prefix));
+      _reportOrder.removeWhere((k) => k.startsWith(prefix));
+      logWarn(
+          '${Drone.nameFor(from)}: numeracja raportów spadła z $highest na $seq '
+          '- dron wystartował od nowa, czyszczę pamięć powtórek',
+          _tag);
+      _lastReportSeq[from] = seq;
+      return;
+    }
+    if (highest == null || seq > highest) _lastReportSeq[from] = seq;
+  }
+
   bool _acknowledgeReport(int from, int seq, String kind) {
     unawaited(transport.sendMission(
       from,
       AckMessage(seq: tracker.nextSeq(), respondingTo: seq),
     ));
 
+    _forgetReportsIfCounterRestarted(from, seq);
+
     final key = '$from/$seq';
     if (!_reportsSeen.add(key)) {
-      logTrace(_tag, 'powtórka $kind q=$seq od ${Drone.nameFor(from)} - '
-          'potwierdzam ponownie, nie zapisuję');
+      logWarn('Powtórka $kind q=$seq od ${Drone.nameFor(from)} - nasze ACK '
+          'nie doszło; potwierdzam ponownie, nie działam drugi raz', _tag);
       return false;
     }
     _reportOrder.add(key);
