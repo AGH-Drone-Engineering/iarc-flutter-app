@@ -25,4 +25,9 @@ const demoRadiusRange = NumberRange(min: 1.0, max: 25.0, step: 0.5);
 /// drone tracks a line. The floor is deliberately not zero -- "no clearance" is
 /// not a setting anybody should be able to choose by accident.
 const demoClearanceRange = NumberRange(min: 1.0, max: 20.0, step: 0.5);
+
+/// Seconds a drone stands on a vertex, after it has been seen to arrive, before
+/// the next step is sent. Zero is a legitimate setting -- it is how the demo
+/// flew before the pause existed -- so this range starts there.
+const demoSettleRange = NumberRange(min: 0.0, max: 10.0, step: 0.5);
 const mainAltitudeRange = NumberRange(min: 0.5, max: 30.0, step: 0.5);

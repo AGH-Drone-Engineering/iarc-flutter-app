@@ -331,6 +331,16 @@ class _MissionStartSection extends StatelessWidget {
             unit: 'm',
             onChanged: app.setDemoRadius,
           ),
+          const SizedBox(height: 8),
+          NumberStepper(
+            label: 'Settle on vertex',
+            value: app.demoSettleSeconds,
+            min: demoSettleRange.min,
+            max: demoSettleRange.max,
+            step: demoSettleRange.step,
+            unit: 's',
+            onChanged: app.setDemoSettle,
+          ),
           const Divider(height: 24),
           SwitchListTile.adaptive(
             contentPadding: EdgeInsets.zero,

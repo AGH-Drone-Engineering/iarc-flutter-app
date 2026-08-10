@@ -100,6 +100,7 @@ class DemoRunner extends ChangeNotifier {
     this.radiusMeters = 5.0,
     this.lockstep = true,
     double clearanceMeters = 4.0,
+    this.settleDelay = Duration.zero,
     this.barrierTimeout = const Duration(seconds: 6),
     this.telemetryTimeout = const Duration(seconds: 4),
     this.groundTelemetryTimeout = const Duration(seconds: 12),
@@ -142,8 +143,22 @@ class DemoRunner extends ChangeNotifier {
   double get clearanceMeters => _conflicts.clearanceMeters;
   set clearanceMeters(double v) => _conflicts.clearanceMeters = v;
 
+  /// How long a drone stands on a vertex before it is sent to the next one.
+  ///
+  /// A drone that has just been declared arrived is still bleeding off the
+  /// approach: the flight controller calls the waypoint reached inside 1.5 m,
+  /// and the first HOVER frame after it can arrive while the airframe is still
+  /// swinging. Commanding the next leg at that instant turns the overshoot into
+  /// the start of the next one. This pause lets it settle on the vertex first.
+  ///
+  /// Zero keeps the old behaviour -- step as soon as the arrival is confirmed.
+  /// Unlike the figure it may be changed mid-run: it paces the formation and
+  /// changes nothing about what keeps the drones apart.
+  Duration settleDelay;
+
   /// How long the drones already at a vertex will wait for the stragglers.
-  /// Whoever has not arrived by then is landed.
+  /// Whoever has not arrived by then is landed. [settleDelay] is added on top
+  /// off-step, where the same clock is what limits a drone held by traffic.
   final Duration barrierTimeout;
 
   /// A position this old is not evidence of anything. Airborne telemetry is
@@ -173,6 +188,7 @@ class DemoRunner extends ChangeNotifier {
   final Set<int> _everAirborne = {};
 
   Timer? _watchdog;
+  Timer? _settleTimer;
   DateTime? _barrierSince;
   bool _escalating = false;
   int? _lockedVertexCount;
@@ -236,6 +252,8 @@ class DemoRunner extends ChangeNotifier {
 
     _watchdog?.cancel();
     _watchdog = Timer.periodic(watchdogPeriod, (_) => _tick());
+    _settleTimer?.cancel();
+    _settleTimer = null;
 
     for (final id in drones) {
       await _tracker.send((q) => StartDemoMessage(seq: q, altitude: altitude), dest: id);
@@ -267,6 +285,8 @@ class DemoRunner extends ChangeNotifier {
     _conflicts.clear();
     _watchdog?.cancel();
     _watchdog = null;
+    _settleTimer?.cancel();
+    _settleTimer = null;
     notifyListeners();
   }
 
@@ -381,7 +401,20 @@ class DemoRunner extends ChangeNotifier {
     }
     if (!formation.every((id) => _progress[id]!.isWaiting)) return;
 
+    // Everybody is here, so nobody is a straggler any more, whatever happens
+    // below.
     _barrierSince = null;
+
+    // The formation leaves together, so it leaves when the last one to arrive
+    // has settled.
+    final wait = formation
+        .map(_settleRemaining)
+        .reduce((a, b) => a > b ? a : b);
+    if (wait > Duration.zero) {
+      _scheduleSettle(wait);
+      return;
+    }
+
     final steps = _progress[formation.first]!.steps + 1;
     if (steps >= maxSteps) {
       logWarn('Formation hit the $maxSteps-step cap - landing', _tag);
@@ -406,9 +439,16 @@ class DemoRunner extends ChangeNotifier {
   /// within a leg or two as the other drone moves on.
   void _releaseIndependently() {
     var moved = false;
+    var soonest = Duration.zero;
     for (final id in _formation.toList()) {
       final p = _progress[id]!;
       if (!p.isWaiting) continue;
+
+      final wait = _settleRemaining(id);
+      if (wait > Duration.zero) {
+        if (soonest == Duration.zero || wait < soonest) soonest = wait;
+        continue;
+      }
 
       final steps = p.steps + 1;
       if (steps >= maxSteps) {
@@ -435,7 +475,28 @@ class DemoRunner extends ChangeNotifier {
       _dispatch(id, steps);
       moved = true;
     }
+    if (soonest > Duration.zero) _scheduleSettle(soonest);
     if (moved) notifyListeners();
+  }
+
+  /// How much longer this drone has to stand still before it may be stepped.
+  Duration _settleRemaining(int droneId) {
+    if (settleDelay <= Duration.zero) return Duration.zero;
+    final since = _heldSince[droneId];
+    if (since == null) return Duration.zero;
+    final left = settleDelay - DateTime.now().difference(since);
+    return left.isNegative ? Duration.zero : left;
+  }
+
+  /// Come back when the settle is over. The watchdog would get there anyway,
+  /// but only to its own resolution, which is coarser than the delays worth
+  /// setting here.
+  void _scheduleSettle(Duration wait) {
+    _settleTimer?.cancel();
+    _settleTimer = Timer(wait, () {
+      _settleTimer = null;
+      if (isRunning) _releaseBarrier();
+    });
   }
 
   /// Commit one drone to its next vertex.
@@ -522,7 +583,9 @@ class DemoRunner extends ChangeNotifier {
         _heldSince.remove(entry.key);
         continue;
       }
-      if (now.difference(entry.value) > barrierTimeout) {
+      // The settle is time it is meant to be standing there, so it does not
+      // count against the drone.
+      if (now.difference(entry.value) > barrierTimeout + settleDelay) {
         _landInPlace(entry.key,
             'held ${barrierTimeout.inSeconds}s waiting for a clear step');
       }
@@ -620,6 +683,8 @@ class DemoRunner extends ChangeNotifier {
     if (isRunning) return;
     _watchdog?.cancel();
     _watchdog = null;
+    _settleTimer?.cancel();
+    _settleTimer = null;
     _barrierSince = null;
   }
 
@@ -639,6 +704,8 @@ class DemoRunner extends ChangeNotifier {
   void dispose() {
     _watchdog?.cancel();
     _watchdog = null;
+    _settleTimer?.cancel();
+    _settleTimer = null;
     _tracker.onAcknowledged = null;
     _tracker.onFailed = null;
     super.dispose();

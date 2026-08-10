@@ -65,6 +65,7 @@ class AppState extends ChangeNotifier {
   static const _kDemoAltKey = 'demo_alt_v1';
   static const _kLockstepKey = 'demo_lockstep_v1';
   static const _kClearanceKey = 'demo_clearance_v1';
+  static const _kSettleKey = 'demo_settle_v1';
   static const _kMainAltKey = 'main_alt_v1';
   static const _kVertexKey = 'demo_vertices_v1';
   static const _kRadiusKey = 'demo_radius_v1';
@@ -92,6 +93,10 @@ class AppState extends ChangeNotifier {
   double get demoRadius => demo.radiusMeters;
   bool get demoLockstep => demo.lockstep;
   double get demoClearance => demo.clearanceMeters;
+
+  /// Pause between a drone being seen on its vertex and the next step going
+  /// out, in seconds.
+  double get demoSettleSeconds => demo.settleDelay.inMilliseconds / 1000;
 
   /// Language the speech recogniser listens in, `pl` or `en`. The parser takes
   /// both regardless -- this only picks the acoustic model, which the engine
@@ -399,6 +404,7 @@ class AppState extends ChangeNotifier {
     demo.radiusMeters = p.getDouble(_kRadiusKey) ?? 5.0;
     demo.lockstep = p.getBool(_kLockstepKey) ?? true;
     demo.clearanceMeters = p.getDouble(_kClearanceKey) ?? 4.0;
+    demo.settleDelay = _settleDuration(p.getDouble(_kSettleKey) ?? 1.0);
     mainAltitude = p.getDouble(_kMainAltKey) ?? 2.0;
     voiceLocale = p.getString(_kVoiceLocaleKey) ?? 'pl';
     notifyListeners();
@@ -442,6 +448,17 @@ class AppState extends ChangeNotifier {
     notifyListeners();
     (await _ensurePrefs()).setDouble(_kClearanceKey, demo.clearanceMeters);
   }
+
+  /// Safe to change mid-run, unlike the figure or the formation mode: it only
+  /// paces the steps.
+  Future<void> setDemoSettle(double seconds) async {
+    demo.settleDelay = _settleDuration(seconds);
+    notifyListeners();
+    (await _ensurePrefs()).setDouble(_kSettleKey, demoSettleSeconds);
+  }
+
+  static Duration _settleDuration(double seconds) =>
+      Duration(milliseconds: (demoSettleRange.clamp(seconds) * 1000).round());
 
   Future<void> setMainAltitude(double v) async {
     mainAltitude = mainAltitudeRange.clamp(v);

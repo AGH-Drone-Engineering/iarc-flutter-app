@@ -62,7 +62,12 @@ MISSION_DONE      → done
 ```
 
 Arrival advances the sequence, not the ACK — an ACK only means the `MOVE` was
-accepted. Each drone has its own state and step counter, capped at 200. `Stop`
+accepted. Arrival itself is read from telemetry (a `HOVER` frame on the vertex),
+not from `WAYPOINT_REACHED`, which is sent once, never acknowledged and carries
+no position. *Settle on vertex* holds the drone there for a configurable pause
+after arrival before the next `MOVE` goes out, so the next leg does not start on
+the tail of the last one's overshoot; 0 s steps as soon as the arrival is
+confirmed. Each drone has its own state and step counter, capped at 200. `Stop`
 ends the sequence without sending RTH. The D-pad issues single `MOVE`s
 independently, resolving direction + step distance against the drone's last
 known position.

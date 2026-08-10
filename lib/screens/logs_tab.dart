@@ -22,12 +22,18 @@ class _LogsTabState extends State<LogsTab> {
     LogLevel.error,
   };
   final _searchCtrl = TextEditingController();
+  final _fromCtrl = TextEditingController();
+  final _toCtrl = TextEditingController();
   String? _sessionId;
   String _search = '';
+  Duration? _from;
+  Duration? _to;
 
   @override
   void dispose() {
     _searchCtrl.dispose();
+    _fromCtrl.dispose();
+    _toCtrl.dispose();
     super.dispose();
   }
 
@@ -41,19 +47,84 @@ class _LogsTabState extends State<LogsTab> {
     return glog.currentSession;
   }
 
+  /// Parses a wall-clock time as written in the log: `13`, `13:57`, `13:57:06`
+  /// or `13:57:06.201`. Null when the text is not a time at all; blank is not an
+  /// error, it just means the bound is open.
+  ///
+  /// [padToEnd] fills the components that were left off with their highest value
+  /// rather than zero, so `13:57` as an upper bound covers the whole minute
+  /// instead of collapsing onto its first millisecond.
+  static Duration? _parseClock(String raw, {required bool padToEnd}) {
+    final text = raw.trim();
+    if (text.isEmpty) return null;
+    final m = RegExp(r'^(\d{1,2})(?::(\d{1,2})?)?(?::(\d{1,2})?)?(?:[.,](\d{1,3}))?$')
+        .firstMatch(text);
+    if (m == null) return null;
+
+    int part(int group, int max) {
+      final g = m.group(group);
+      if (g == null) return padToEnd ? max : 0;
+      return int.parse(g);
+    }
+
+    final hours = int.parse(m.group(1)!);
+    final minutes = part(2, 59);
+    final seconds = part(3, 59);
+    final millis = m.group(4) == null
+        ? (padToEnd ? 999 : 0)
+        : int.parse(m.group(4)!.padRight(3, '0'));
+    if (hours > 23 || minutes > 59 || seconds > 59) return null;
+
+    return Duration(
+        hours: hours, minutes: minutes, seconds: seconds, milliseconds: millis);
+  }
+
+  static Duration _timeOfDay(DateTime ts) => Duration(
+      hours: ts.hour,
+      minutes: ts.minute,
+      seconds: ts.second,
+      milliseconds: ts.millisecond);
+
+  bool _inWindow(DateTime ts) {
+    final from = _from;
+    final to = _to;
+    if (from == null && to == null) return true;
+    final at = _timeOfDay(ts);
+    // An upper bound below the lower one reads as a window across midnight,
+    // which is the only way to express one when the bounds are times of day.
+    if (from != null && to != null && to < from) return at >= from || at <= to;
+    if (from != null && at < from) return false;
+    if (to != null && at > to) return false;
+    return true;
+  }
+
   List<LogEntry> _filter(LogSession session) {
     final q = _search.toLowerCase();
     return session.entries.where((e) {
       if (!_levels.contains(e.level)) return false;
+      if (!_inWindow(e.timestamp)) return false;
       if (q.isEmpty) return true;
       return e.message.toLowerCase().contains(q) || e.tag.toLowerCase().contains(q);
     }).toList();
+  }
+
+  static String _windowLabel(Duration? from, Duration? to) {
+    String fmt(Duration d) {
+      final h = d.inHours.toString().padLeft(2, '0');
+      final m = (d.inMinutes % 60).toString().padLeft(2, '0');
+      final s = (d.inSeconds % 60).toString().padLeft(2, '0');
+      final ms = (d.inMilliseconds % 1000).toString().padLeft(3, '0');
+      return '$h:$m:$s.$ms';
+    }
+
+    return '${from == null ? "start" : fmt(from)} .. ${to == null ? "end" : fmt(to)}';
   }
 
   Future<void> _copy(List<LogEntry> entries, LogSession session) async {
     final text = [
       '# IARC 2026 log — session ${session.label}',
       '# ${entries.length} entries, levels: ${_levels.map((l) => l.label).join(",")}',
+      if (_from != null || _to != null) '# window: ${_windowLabel(_from, _to)}',
       if (_search.isNotEmpty) '# filter: "$_search"',
       '',
       ...entries.map((e) => e.plainText),
@@ -94,14 +165,19 @@ class _LogsTabState extends State<LogsTab> {
             levels: _levels,
             session: session,
             searchController: _searchCtrl,
+            fromController: _fromCtrl,
+            toController: _toCtrl,
             onToggle: (level, on) => setState(() {
               on ? _levels.add(level) : _levels.remove(level);
             }),
             onSearch: (v) => setState(() => _search = v),
+            onFrom: (v) => setState(() => _from = _parseClock(v, padToEnd: false)),
+            onTo: (v) => setState(() => _to = _parseClock(v, padToEnd: true)),
           ),
           _ActionBar(
             count: entries.length,
             total: session.entries.length,
+            chars: entries.fold<int>(0, (n, e) => n + e.plainText.length + 1),
             isCurrent: isCurrent,
             onCopy: entries.isEmpty ? null : () => _copy(entries, session),
             onClear: isCurrent ? glog.clearCurrent : null,
@@ -194,15 +270,23 @@ class _FilterBar extends StatelessWidget {
     required this.levels,
     required this.session,
     required this.searchController,
+    required this.fromController,
+    required this.toController,
     required this.onToggle,
     required this.onSearch,
+    required this.onFrom,
+    required this.onTo,
   });
 
   final Set<LogLevel> levels;
   final LogSession session;
   final TextEditingController searchController;
+  final TextEditingController fromController;
+  final TextEditingController toController;
   final void Function(LogLevel, bool) onToggle;
   final ValueChanged<String> onSearch;
+  final ValueChanged<String> onFrom;
+  final ValueChanged<String> onTo;
 
   @override
   Widget build(BuildContext context) {
@@ -275,7 +359,81 @@ class _FilterBar extends StatelessWidget {
               ),
             ),
           ),
+          const SizedBox(height: 6),
+          Row(
+            children: [
+              const Icon(Icons.schedule, size: 18),
+              const SizedBox(width: 6),
+              Expanded(
+                child: _ClockField(
+                  controller: fromController,
+                  hint: 'from 13:57:06',
+                  onChanged: onFrom,
+                ),
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: _ClockField(
+                  controller: toController,
+                  hint: 'to 13:58',
+                  onChanged: onTo,
+                ),
+              ),
+            ],
+          ),
         ],
+      ),
+    );
+  }
+}
+
+/// One end of the wall-clock window. Blank means open; text that is not a time
+/// is shown as an error rather than silently ignored.
+class _ClockField extends StatelessWidget {
+  const _ClockField({
+    required this.controller,
+    required this.hint,
+    required this.onChanged,
+  });
+
+  final TextEditingController controller;
+  final String hint;
+  final ValueChanged<String> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final raw = controller.text.trim();
+    final bad = raw.isNotEmpty &&
+        _LogsTabState._parseClock(raw, padToEnd: false) == null;
+
+    return SizedBox(
+      height: 38,
+      child: TextField(
+        controller: controller,
+        onChanged: onChanged,
+        keyboardType: TextInputType.datetime,
+        style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
+        decoration: InputDecoration(
+          isDense: true,
+          hintText: hint,
+          hintStyle: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+          errorText: bad ? 'hh:mm:ss' : null,
+          errorStyle: const TextStyle(fontSize: 10, height: 0.6),
+          suffixIcon: raw.isEmpty
+              ? null
+              : IconButton(
+                  icon: const Icon(Icons.clear, size: 16),
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                  onPressed: () {
+                    controller.clear();
+                    onChanged('');
+                  },
+                ),
+          suffixIconConstraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+          border: const OutlineInputBorder(),
+          contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+        ),
       ),
     );
   }
@@ -285,6 +443,7 @@ class _ActionBar extends StatelessWidget {
   const _ActionBar({
     required this.count,
     required this.total,
+    required this.chars,
     required this.isCurrent,
     required this.onCopy,
     required this.onClear,
@@ -292,18 +451,21 @@ class _ActionBar extends StatelessWidget {
 
   final int count;
   final int total;
+  final int chars;
   final bool isCurrent;
   final VoidCallback? onCopy;
   final VoidCallback? onClear;
 
   @override
   Widget build(BuildContext context) {
+    final size = chars < 1024 ? '$chars chars' : '${(chars / 1024).toStringAsFixed(1)} kB';
+
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
       child: Row(
         children: [
           Text(
-            count == total ? '$total entries' : '$count of $total',
+            '${count == total ? "$total entries" : "$count of $total"} · $size',
             style: Theme.of(context).textTheme.labelSmall,
           ),
           const Spacer(),

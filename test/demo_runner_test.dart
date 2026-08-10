@@ -42,6 +42,7 @@ final _anchors = {1: _anchorA, 2: _anchorB};
   Duration watchdogPeriod = const Duration(milliseconds: 15),
   bool lockstep = true,
   double clearanceMeters = 4.0,
+  Duration settleDelay = Duration.zero,
 }) {
   final tracker = CommandTracker(
     sender: sender.call,
@@ -56,6 +57,7 @@ final _anchors = {1: _anchorA, 2: _anchorB};
       maxSteps: maxSteps,
       lockstep: lockstep,
       clearanceMeters: clearanceMeters,
+      settleDelay: settleDelay,
       barrierTimeout: barrierTimeout,
       telemetryTimeout: telemetryTimeout,
       groundTelemetryTimeout: groundTelemetryTimeout,
@@ -119,12 +121,14 @@ Future<({CommandTracker tracker, DemoRunner runner})> launched(
   Duration telemetryTimeout = const Duration(seconds: 30),
   bool lockstep = true,
   double clearanceMeters = 4.0,
+  Duration settleDelay = Duration.zero,
 }) async {
   final built = build(sender,
       barrierTimeout: barrierTimeout,
       telemetryTimeout: telemetryTimeout,
       lockstep: lockstep,
-      clearanceMeters: clearanceMeters);
+      clearanceMeters: clearanceMeters,
+      settleDelay: settleDelay);
   await built.runner.start([1, 2], 3.0);
   ackLast(built.tracker, sender, 1);
   ackLast(built.tracker, sender, 2);
@@ -563,6 +567,87 @@ void main() {
     expect(runner.progressFor(2)!.phase, DemoPhase.landing);
     expect(runner.progressFor(1)!.detail, contains('clearance'));
     expect(sender.to(1).whereType<RthMessage>(), isEmpty);
+
+    runner.dispose();
+    tracker.dispose();
+  });
+
+  test('lockstep: the next step waits out the settle delay', () async {
+    final sender = FakeSender();
+    final (:tracker, :runner) =
+        await launched(sender, settleDelay: const Duration(milliseconds: 250));
+
+    expect(runner.progressFor(1)!.steps, -1,
+        reason: 'the opening step settles over the anchor like any other');
+    await settle(120);
+    expect(runner.progressFor(1)!.steps, -1, reason: 'still settling');
+
+    await settle(200);
+    expect(runner.progressFor(1)!.steps, 0);
+    expect(runner.progressFor(2)!.steps, 0);
+    ackLast(tracker, sender, 1);
+    ackLast(tracker, sender, 2);
+
+    final figureA = runner.progressFor(1)!.figure;
+    final figureB = runner.progressFor(2)!.figure;
+    flyTo(runner, 1, figureA[0]);
+    flyTo(runner, 2, figureB[0]);
+    await settle(120);
+
+    expect(runner.progressFor(1)!.phase, DemoPhase.holding,
+        reason: 'both are on the vertex, but the formation has not settled');
+    expect(runner.progressFor(1)!.steps, 0);
+
+    await settle(200);
+    expect(runner.progressFor(1)!.steps, 1);
+    expect(runner.progressFor(2)!.steps, 1);
+
+    runner.dispose();
+    tracker.dispose();
+  });
+
+  test('off-step: a drone settles on its vertex before stepping on', () async {
+    final sender = FakeSender();
+    final (:tracker, :runner) = await launched(sender,
+        lockstep: false,
+        clearanceMeters: 1.0,
+        settleDelay: const Duration(milliseconds: 250));
+    await settle(320);
+    ackLast(tracker, sender, 1);
+    ackLast(tracker, sender, 2);
+    final figureA = runner.progressFor(1)!.figure;
+
+    flyTo(runner, 1, figureA[0]);
+    await settle(120);
+    expect(runner.progressFor(1)!.steps, 0, reason: 'settling, not stepping');
+    expect(runner.progressFor(1)!.phase, DemoPhase.holding);
+
+    await settle(200);
+    expect(runner.progressFor(1)!.steps, 1);
+
+    runner.dispose();
+    tracker.dispose();
+  });
+
+  test('off-step: the settle does not count as being held by traffic', () async {
+    final sender = FakeSender();
+    // Nothing is in this drone's way: the only reason it is standing still is
+    // the settle, which must not be charged against the hold timeout.
+    final (:tracker, :runner) = await launched(sender,
+        lockstep: false,
+        clearanceMeters: 1.0,
+        barrierTimeout: const Duration(milliseconds: 200),
+        settleDelay: const Duration(milliseconds: 300));
+    await settle(400);
+    ackLast(tracker, sender, 1);
+    ackLast(tracker, sender, 2);
+    final figureA = runner.progressFor(1)!.figure;
+
+    flyTo(runner, 1, figureA[0]);
+    await settle(400);
+
+    expect(runner.progressFor(1)!.phase, isNot(DemoPhase.landing));
+    expect(runner.progressFor(1)!.steps, 1);
 
     runner.dispose();
     tracker.dispose();
