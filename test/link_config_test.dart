@@ -44,4 +44,21 @@ void main() {
         reason: 'a zero timeout would arm a retry loop with no gap');
     expect(back.maxAttempts, kMaxAttemptsRange.min);
   });
+
+  test('a stored ACK timeout wider than the drone\'s dedupe window is clamped',
+      () {
+    // phone.log 2026-08-10: this was set to 10 s and persisted. Every retry
+    // then reached the drone after its 5 s retransmission window had lapsed,
+    // and was executed as a fresh command.
+    final stored = LinkConfig.defaults([3]).copyWith(ackTimeoutMs: 10000).encode();
+    final loaded = LinkConfig.decode(stored, [3]);
+
+    expect(loaded.ackTimeoutMs, kAckTimeoutMsRange.max);
+    expect(loaded.ackTimeoutMs, lessThan(kDroneDedupeWindowMs),
+        reason: 'a retry has to arrive while the drone still remembers the q');
+  });
+
+  test('the settable range cannot express an interval the drone would miss', () {
+    expect(kAckTimeoutMsRange.max, lessThan(kDroneDedupeWindowMs));
+  });
 }

@@ -256,7 +256,41 @@ class DemoRunner extends ChangeNotifier {
 
   /// Distance between neighbouring vertices -- the most a drone can be out of
   /// position while still merely lagging within a leg.
-  double get segmentMeters => 2 * radiusMeters * sin(pi / vertexCount);
+  ///
+  /// Uses the figure actually being flown, not the operator's current settings:
+  /// once a run has started those are frozen ([_lockedRadius]), and measuring a
+  /// live drone against a figure it is not flying is worse than not measuring.
+  double get segmentMeters =>
+      2 *
+      (_lockedRadius ?? radiusMeters) *
+      sin(pi / (_lockedVertexCount ?? vertexCount));
+
+  /// Why this figure cannot be flown, or null if it can.
+  ///
+  /// A figure whose edge is no longer than the arrival tolerance cannot be
+  /// checked: a drone standing on vertex *k* is inside tolerance of *k±1*, so
+  /// "it is where we sent it" stops being a question the ground station can
+  /// answer. On 2026-08-10, at 2.0 m and 8 vertices, the edge was 1.53 m against
+  /// a 2.0 m tolerance and the app credited vertices 1 and 3 while the drone
+  /// sat on 0 and 2.
+  ///
+  /// That matters most in lockstep, where separation *is* the phase: identical
+  /// figures on the same vertex index stay their anchors apart, and nothing else
+  /// keeps the drones apart. A phase slip nobody can detect is a guarantee that
+  /// has quietly stopped holding.
+  ///
+  /// Checked here rather than only in the UI because the voice parser and any
+  /// future caller reach the same numbers.
+  String? get figureFault {
+    final edge = 2 * radiusMeters * sin(pi / vertexCount);
+    if (edge > arrivalToleranceMeters) return null;
+    final needed = arrivalToleranceMeters / (2 * sin(pi / vertexCount));
+    return 'vertices ${edge.toStringAsFixed(2)}m apart on a '
+        '${radiusMeters.toStringAsFixed(1)}m/$vertexCount-point figure, inside '
+        'the ${arrivalToleranceMeters.toStringAsFixed(1)}m arrival tolerance - '
+        'arrivals could not be told apart. Raise the radius above '
+        '${needed.toStringAsFixed(1)}m or use fewer vertices';
+  }
 
   Map<int, DemoProgress> get progress => Map.unmodifiable(_progress);
   bool get isRunning => _progress.values.any((p) => p.isActive);
@@ -270,6 +304,13 @@ class DemoRunner extends ChangeNotifier {
 
   Future<void> start(List<int> drones, double altitude) async {
     if (drones.isEmpty) return;
+
+    final fault = figureFault;
+    if (fault != null) {
+      logError('Demo not started: $fault', _tag);
+      return;
+    }
+
     _progress.clear();
     _lastState.clear();
     _lastFix.clear();

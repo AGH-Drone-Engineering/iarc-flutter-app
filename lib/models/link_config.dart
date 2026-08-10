@@ -33,9 +33,23 @@ class UdpEndpoint {
   String toString() => '$host:$port';
 }
 
+/// The drone treats a repeated `q` as a retransmission only while it still has
+/// the reply cached — `DEDUPE_WINDOW`, 5 s (PROTOCOL.md §7).
+const kDroneDedupeWindowMs = 5000;
+
 /// Bounds for the ACK settings, shared by the fields on the link tab and the
 /// decoder -- a stored zero would arm a zero-length retry timer.
-const kAckTimeoutMsRange = (min: 100, max: 30000);
+///
+/// The ceiling is not a matter of taste. A retry reuses the original `q`, so one
+/// that arrives after [kDroneDedupeWindowMs] is not a retransmission at all: the
+/// drone has forgotten the reply, cannot tell it from a new command, and
+/// executes it again. On 2026-08-10 this was set to 10 s, and a `MOVE` retry
+/// fired ten seconds and four vertices late flew a drone back across the figure.
+///
+/// So the maximum is held safely under the drone's window. Patience is bought
+/// with [kMaxAttemptsRange] instead, which costs nothing when the link is
+/// healthy — retries only happen when an ACK is already missing.
+const kAckTimeoutMsRange = (min: 100, max: 4000);
 const kMaxAttemptsRange = (min: 1, max: 10);
 
 class LinkConfig {

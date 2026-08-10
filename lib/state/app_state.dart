@@ -163,6 +163,13 @@ class AppState extends ChangeNotifier {
     final raw = p.getString(_kLinkKey);
     if (raw != null) config = LinkConfig.decode(raw, Drone.allIds);
     _applyAckConfig();
+    // Said out loud at every launch: the decoder silently clamps a stored value
+    // that is out of range, and a retry interval is not something an operator
+    // should have to guess at after the fact.
+    logInfo('ACK timeout ${config.ackTimeoutMs} ms × ${config.maxAttempts} '
+        'attempts (max ${kAckTimeoutMsRange.max} ms - a retry must reach the '
+        'drone inside its ${kDroneDedupeWindowMs} ms retransmission window)',
+        _tag);
     notifyListeners();
   }
 

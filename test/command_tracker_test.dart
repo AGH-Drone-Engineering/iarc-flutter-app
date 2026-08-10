@@ -223,4 +223,76 @@ void main() {
     expect(tracker.failures, isEmpty);
     tracker.dispose();
   });
+
+  // ---- BUSY answering our own retry is not a rejection ---------------------
+
+  test('BUSY on a retried START_DEMO waits for the ACK instead of aborting',
+      () async {
+    final sender = FakeSender();
+    final tracker = CommandTracker(
+      sender: sender.call,
+      knownDrones: [1],
+      ackTimeout: const Duration(milliseconds: 50),
+      maxAttempts: 5,
+    );
+    final failures = <AckFailure>[];
+    tracker.onFailed = failures.add;
+    final acked = <MissionMessage>[];
+    tracker.onAcknowledged = (_, command, _) => acked.add(command);
+
+    final seq = await tracker.send(
+        (q) => StartDemoMessage(seq: q, altitude: 3.0), dest: 1);
+
+    // The drone accepted attempt 1 but its ACK was lost, so it is no longer IDLE
+    // when our retry arrives and it answers BUSY.
+    await Future<void>.delayed(const Duration(milliseconds: 80));
+    expect(sender.sent.length, greaterThan(1), reason: 'it retried');
+    tracker.handleIncoming(
+      1,
+      NackMessage(seq: 500, respondingTo: seq, error: NackError.busy),
+    );
+
+    expect(failures, isEmpty,
+        reason: 'aborting here lands a drone that is already climbing');
+
+    final before = sender.sent.length;
+    await Future<void>.delayed(const Duration(milliseconds: 120));
+    expect(sender.sent.length, before,
+        reason: 'asking again can only be answered BUSY again');
+
+    // The real ACK still lands and still anchors the figure.
+    tracker.handleIncoming(
+      1,
+      AckMessage(seq: 501, respondingTo: seq, position: const LatLng(50.0, 19.0)),
+    );
+    expect(acked, hasLength(1));
+    expect(acked.single, isA<StartDemoMessage>());
+
+    tracker.dispose();
+  });
+
+  test('BUSY on a first attempt is still a real rejection', () async {
+    final sender = FakeSender();
+    final tracker = CommandTracker(
+      sender: sender.call,
+      knownDrones: [1],
+      ackTimeout: const Duration(seconds: 30),
+      maxAttempts: 3,
+    );
+    final failures = <AckFailure>[];
+    tracker.onFailed = failures.add;
+
+    final seq = await tracker.send(
+        (q) => StartDemoMessage(seq: q, altitude: 3.0), dest: 1);
+    tracker.handleIncoming(
+      1,
+      NackMessage(seq: 500, respondingTo: seq, error: NackError.busy),
+    );
+
+    expect(failures, hasLength(1),
+        reason: 'nothing of ours could have caused this one');
+    expect(failures.single.kind, AckFailureKind.rejected);
+
+    tracker.dispose();
+  });
 }

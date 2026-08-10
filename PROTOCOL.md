@@ -510,8 +510,18 @@ LoRaCom is host-initiated; the board never pushes. The ground station:
 
 - `q` increments per message per sender and wraps at 65535.
 - Receivers MUST NOT assume `q` arrives in order or without gaps.
-- A repeated `q` from the same sender within 5 s MUST be treated as a retransmission:
-  re-send the ACK, do not repeat the action.
+- A repeated `q` from the same sender within 5 s **of the last time that `q` was
+  seen** MUST be treated as a retransmission: re-send the cached reply, do not
+  repeat the action, and restart the 5 s from this repeat.
+
+  Measuring the window from the *first* reply instead caps protection at a fixed
+  5 s no matter how many retries arrive — with a 2 s retry interval the third
+  retransmission lands outside it and the command executes a second time. The
+  window must last as long as the sender keeps asking.
+
+- Consequently a sender's retry interval MUST be shorter than 5 s. A retry that
+  arrives after the window has lapsed is not a retransmission, it is a new
+  command carrying an old order, and the receiver cannot tell the difference.
 
 ## 8. Demo sequencing
 

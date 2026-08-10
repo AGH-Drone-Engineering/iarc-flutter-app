@@ -390,15 +390,38 @@ class _MissionStartSection extends StatelessWidget {
                 backgroundColor: Theme.of(context).colorScheme.tertiary,
               ),
             )
-          else
+          else ...[
+            if (app.demo.figureFault != null)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Icon(Icons.error_outline,
+                        size: 18, color: Theme.of(context).colorScheme.error),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        app.demo.figureFault!,
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              color: Theme.of(context).colorScheme.error,
+                            ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             FilledButton.icon(
-              onPressed: enabled ? () => app.startDemo() : null,
+              onPressed: enabled && app.demo.figureFault == null
+                  ? () => app.startDemo()
+                  : null,
               icon: const Icon(Icons.flight_takeoff),
               label: const Text('START DEMO'),
               style: FilledButton.styleFrom(
                 minimumSize: const Size.fromHeight(48),
               ),
             ),
+          ],
           const SizedBox(height: 20),
           const Divider(height: 1),
           const SizedBox(height: 16),

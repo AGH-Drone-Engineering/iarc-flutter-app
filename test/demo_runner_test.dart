@@ -668,6 +668,34 @@ void main() {
     tracker.dispose();
   });
 
+  // ---- the figure has to be measurable ------------------------------------
+
+  test('a figure whose vertices are closer than the arrival tolerance is refused',
+      () async {
+    final sender = FakeSender();
+    final (:tracker, :runner) = build(sender);
+    runner.radiusMeters = 2.0;      // the 2026-08-10 setting: 1.53 m edge
+    runner.vertexCount = 8;
+
+    expect(runner.figureFault, isNotNull);
+    expect(runner.figureFault, contains('arrival tolerance'));
+
+    await runner.start([1, 2], 3.0);
+
+    expect(runner.isRunning, isFalse);
+    expect(sender.sent, isEmpty,
+        reason: 'nothing may reach a drone for a figure we cannot check');
+
+    // Opened up, the same figure is fine.
+    runner.radiusMeters = 5.0;
+    expect(runner.figureFault, isNull);
+    await runner.start([1, 2], 3.0);
+    expect(runner.isRunning, isTrue);
+
+    runner.dispose();
+    tracker.dispose();
+  });
+
   test('off-step: a drone advances without waiting for the others', () async {
     final sender = FakeSender();
     // Anchors are 8 m apart and the figures are radius 5, so a drone on its own

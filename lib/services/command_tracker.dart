@@ -54,6 +54,11 @@ class _PendingGroup {
 
   int attempts = 1;
   Timer? timer;
+
+  /// Keep waiting for the ACK, but stop retransmitting. Set when the drone has
+  /// told us it already has this command, so asking again can only be answered
+  /// the same way.
+  bool quiet = false;
 }
 
 class CommandTracker extends ChangeNotifier {
@@ -167,6 +172,17 @@ class CommandTracker extends ChangeNotifier {
     }
 
     group.attempts++;
+
+    if (group.quiet) {
+      // The drone has said it already holds this command. Let the attempt clock
+      // run so a drone that then goes silent is still reported, but do not add
+      // a frame that can only be refused again.
+      logTrace(_tag, '${group.message.type} q=${group.seq} not resent '
+          '(attempt ${group.attempts}/$maxAttempts) — already accepted');
+      _arm(group);
+      return;
+    }
+
     logWarn(
       'Retrying ${group.message.type} (attempt ${group.attempts}/$maxAttempts) — '
       'awaiting ${group.awaiting.join(", ")}',
@@ -213,6 +229,32 @@ class CommandTracker extends ChangeNotifier {
 
       case NackMessage(:final respondingTo, :final error):
         final group = _groups[respondingTo];
+
+        // BUSY answering a retry of a start command is almost certainly our own
+        // duplicate coming back: the drone accepted attempt 1, its ACK was lost,
+        // and by the time we asked again it was no longer IDLE. Reporting that
+        // as a rejection aborts a demo that is in fact starting -- and would
+        // land a drone that is already climbing.
+        //
+        // So: stop asking, because further attempts can only produce more BUSY,
+        // but keep listening. The genuine ACK still resolves the group and
+        // anchors the figure; if it never arrives the ordinary silence timeout
+        // reports it, which is the truth -- we do not know where the drone is.
+        if (group != null &&
+            error == NackError.busy &&
+            group.attempts > 1 &&
+            group.message is StartDemoMessage) {
+          group.quiet = true;
+          logWarn(
+            '${group.message.type} q=$respondingTo answered BUSY on attempt '
+            '${group.attempts} — drone $from most likely accepted our first '
+            'attempt; waiting for its ACK instead of aborting',
+            _tag,
+          );
+          _clearFailureOnContact(from);
+          return;
+        }
+
         _resolve(from, respondingTo);
         if (group != null) {
           _failures[from] = AckFailure(
