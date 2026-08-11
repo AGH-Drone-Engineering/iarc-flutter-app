@@ -503,7 +503,7 @@ void main() {
     tracker.dispose();
   });
 
-  test('a straggler that never answers STATUS is landed', () async {
+  test('a straggler that never answers STATUS is dropped, not landed', () async {
     final sender = FakeSender();
     // Nothing is acked here, so the probe exhausts its 60 ms x 3 attempts. That
     // is the one thing silence cannot say: not "no report came" but "the drone
@@ -517,9 +517,12 @@ void main() {
     flyTo(runner, 1, figureA[0]);
     await settle(400);
 
-    expect(runner.progressFor(2)!.phase, DemoPhase.landing);
-    expect(runner.progressFor(2)!.detail, contains('did not answer STATUS'));
-    expect(sender.lastTo(2), isA<LandMessage>());
+    // A LAND cannot reach a drone that answers nothing, so sending one would be
+    // theatre. It leaves the formation, stops getting keepalives, and lands
+    // itself on its own no-contact timer -- or the pilot takes it.
+    expect(runner.progressFor(2)!.phase, DemoPhase.stopped);
+    expect(runner.progressFor(2)!.detail, contains('unreachable'));
+    expect(sender.to(2).whereType<LandMessage>(), isEmpty);
 
     runner.dispose();
     tracker.dispose();
@@ -846,7 +849,7 @@ void main() {
     tracker.dispose();
   });
 
-  test('a leg that never reports an arrival is landed, telemetry or not',
+  test('a leg that never reports an arrival is dropped, telemetry or not',
       () async {
     final sender = FakeSender();
     final built = build(sender,
@@ -865,9 +868,12 @@ void main() {
 
     await settle(250);
 
-    expect(runner.progressFor(1)!.phase, DemoPhase.landing);
-    expect(runner.progressFor(1)!.detail, contains('no arrival reported within'));
-    expect(sender.lastTo(1), isA<LandMessage>());
+    // Not landed. By then it has been probed repeatedly, so either something
+    // outside our control has the aircraft -- on 2026-08-11 that was the pilot
+    // taking LOITER -- or it cannot hear us and a LAND would not arrive either.
+    expect(runner.progressFor(1)!.phase, DemoPhase.stopped);
+    expect(runner.progressFor(1)!.detail, contains('no arrival within'));
+    expect(sender.to(1).whereType<LandMessage>(), isEmpty);
 
     runner.dispose();
     tracker.dispose();
@@ -919,42 +925,39 @@ void main() {
     tracker.dispose();
   });
 
-  test('a drone we have already landed is not adopted back mid-climb', () async {
+  test('a drone we have already landed is left alone, not sent anywhere',
+      () async {
     final sender = FakeSender();
-    final (:tracker, :runner) = build(sender);
-    await runner.start([1, 2], 3.0);
-    ackLast(tracker, sender, 2);
-    becomeAirborne(runner, 2);
+    final (:tracker, :runner) = await launched(sender);
+
+    // Landed for a refusal, which is the one kind of command failure that still
+    // lands: the drone can hear us and is telling us it will not fly the leg.
+    // (A *lost* ACK no longer lands anything -- airborne telemetry, an arrival
+    // report or a BUSY all confirm the command instead, which is what saves the
+    // mid-climb case this test used to cover.)
+    tracker.handleIncoming(
+      1,
+      NackMessage(
+        seq: 700,
+        respondingTo: sender.movesTo(1).last.seq,
+        error: NackError.geofence,
+      ),
+    );
     await pump();
-
-    // Answer node 1's LAND but never its START_DEMO. That is the situation on the
-    // day: the start ACK was lost, so the app gave up; and the LAND has to be
-    // acknowledged or its own retries exhaust and _escalate ends the whole run,
-    // which would send what follows down the stray path instead of this one.
-    final ackLands = Timer.periodic(const Duration(milliseconds: 5), (_) {
-      if (sender.to(1).isNotEmpty &&
-          sender.lastTo(1) is LandMessage &&
-          tracker.isAwaitingAck(1)) {
-        ackLast(tracker, sender, 1);
-      }
-    });
-
-    telem(runner, 1, DroneState.takeoff, _anchorA);   // airborne, so it is landed
-    await settle(400);
-    ackLands.cancel();
 
     final landed = sender.to(1).whereType<LandMessage>().length;
     expect(landed, greaterThan(0), reason: 'we commanded it down');
-    expect(runner.progressFor(1)!.isActive, isFalse);
-    expect(runner.isRunning, isTrue, reason: 'drone 2 is still mustering');
+    expect(runner.progressFor(1)!.phase, DemoPhase.landing);
 
-    // Its ARRIVED, sent while it was still climbing, reaches us after our LAND.
-    // Adopting it means landing it again a moment later for reporting LANDING -
-    // punishing a drone for obeying.
-    arrive(runner, 1, _anchorA);
+    // Its ARRIVED for the leg it was flying reaches us after our LAND. On
+    // 2026-08-11 this answered with an RTH to 2.5 m -- one metre above a
+    // formation the drone was already descending out of -- because the guard for
+    // it sat below the in-flight branch and was unreachable.
+    arrive(runner, 1, sender.movesTo(1).last.target);
     await pump();
 
-    expect(runner.progressFor(1)!.isActive, isFalse, reason: 'not re-adopted');
+    expect(sender.to(1).whereType<RthMessage>(), isEmpty,
+        reason: 'a drone we have sent down must not then be sent home');
     expect(sender.to(1).whereType<LandMessage>().length, landed,
         reason: 'and not landed a second time either');
 
@@ -1285,7 +1288,8 @@ void main() {
     tracker.dispose();
   });
 
-  test('off-step: a drone held too long by traffic is landed', () async {
+  test('off-step: a drone held too long by traffic is dropped, not landed',
+      () async {
     final sender = FakeSender();
     final (:tracker, :runner) = await launched(sender,
         lockstep: false,
@@ -1307,8 +1311,12 @@ void main() {
       await settle(30);
     }
 
-    expect(runner.progressFor(1)!.phase, DemoPhase.landing);
-    expect(runner.progressFor(1)!.detail, contains('waiting for a clear step'));
+    // The deadlock is the ground station's, not the aircraft's: it is hovering
+    // exactly where it was told to. It leaves the formation so the others can
+    // carry on, and stays in the air for the pilot.
+    expect(runner.progressFor(1)!.phase, DemoPhase.stopped);
+    expect(runner.progressFor(1)!.detail, contains('no clear step'));
+    expect(sender.to(1).whereType<LandMessage>(), isEmpty);
 
     runner.dispose();
     tracker.dispose();

@@ -104,6 +104,7 @@ class DemoRunner extends ChangeNotifier {
     this.barrierTimeout = const Duration(seconds: 6),
     this.stragglerProbeInterval = const Duration(seconds: 4),
     this.stationarySpeedMeters = 0.6,
+    this.altitudeToleranceMeters = 1.2,
     this.telemetryTimeout = const Duration(seconds: 4),
     this.groundTelemetryTimeout = const Duration(seconds: 40),
     this.legTimeout = const Duration(seconds: 30),
@@ -193,6 +194,15 @@ class DemoRunner extends ChangeNotifier {
   /// `ARRIVED` asserts "reached it *and* stopped", so a position alone must
   /// carry the same two claims or it is not the same evidence.
   final double stationarySpeedMeters;
+
+  /// How far off the run's hover altitude a drone may be and still be treated as
+  /// standing on its vertex, in metres.
+  ///
+  /// Wide enough to cover the altitude hold of a small quad in wind and the
+  /// offset a mid-flight joiner is given, narrow enough to separate "in the
+  /// formation" from "on the ground" -- which is the distinction that matters,
+  /// and the one that was missing on 2026-08-11.
+  final double altitudeToleranceMeters;
 
   /// A position this old is not evidence of anything. Airborne telemetry is
   /// 1 Hz by default, so this is several missed frames, not a hair trigger.
@@ -660,6 +670,25 @@ class DemoRunner extends ChangeNotifier {
     final p = _progress[droneId];
     if (p == null) return;
 
+    // Events are unacknowledged and sent once, so they are never a reason to act
+    // -- but they are perfectly good evidence that a command was obeyed, and the
+    // whole point of collecting evidence is that any one source is enough.
+    switch (event) {
+      case MissionEvent.missionStart:
+        _tracker.confirm(droneId, (m) => m is StartDemoMessage,
+            'its MISSION_START event');
+      case MissionEvent.rthStart:
+        _tracker.confirm(droneId, (m) => m is RthMessage, 'its RTH_START event');
+      case MissionEvent.landed:
+        _tracker.confirm(droneId, (m) => m is LandMessage || m is RthMessage,
+            'its LANDED event');
+      case MissionEvent.waypointReached:
+        _tracker.confirm(droneId, (m) => m is MoveMessage,
+            'its WAYPOINT_REACHED event');
+      default:
+        break;
+    }
+
     if (event == MissionEvent.missionDone || event == MissionEvent.landed) {
       if (p.phase == DemoPhase.finished) return;
       _progress[droneId] =
@@ -702,7 +731,17 @@ class DemoRunner extends ChangeNotifier {
         reportedSpeed: telemetry.groundSpeed,
         accuracyMeters: telemetry.accuracyMeters);
 
-    if (telemetry.state.isAirborne) _everAirborne.add(droneId);
+    if (telemetry.state.isAirborne) {
+      _everAirborne.add(droneId);
+      // Off the ground, so START_DEMO was obeyed whatever became of its ACK.
+      _tracker.confirm(droneId, (m) => m is StartDemoMessage,
+          'telemetry showing it ${telemetry.state.wire}');
+    }
+    if (telemetry.state == DroneState.landing ||
+        telemetry.state == DroneState.landed) {
+      _tracker.confirm(droneId, (m) => m is LandMessage || m is RthMessage,
+          'telemetry showing it ${telemetry.state.wire}');
+    }
 
     // Only a fault once it should be flying: between START_DEMO and the climb
     // IDLE and ARMING are correct, and those frames can arrive late.
@@ -758,20 +797,20 @@ class DemoRunner extends ChangeNotifier {
     // to k+1 from the wrong place. Left alone it stops receiving keepalives and
     // comes down on its own idle timer, which is the safe outcome.
     if (p == null || !p.isActive || p.figure.isEmpty) {
-      if (!isRunning || _flying) {
-        _sendStrayHome(droneId);
-        return;
-      }
-      // Not if we have already told it to come down. On 2026-08-10 the app gave
-      // up on node 1, sent LAND, and then adopted it back into the muster ten
-      // seconds later off the arrival report it made while still climbing -- and
-      // landed it again immediately for "reported LANDING mid-formation". It was
-      // being punished for obeying. A drone we have sent down has to finish
-      // coming down and be started again from scratch.
+      // Checked FIRST, before anything can be sent. On 2026-08-11 this guard sat
+      // below the `_flying` branch and so was unreachable in flight: the app
+      // landed drone 1, its arrival report for the leg it had been flying arrived
+      // a second later, and the stray path answered it with an `RTH` to 2.5 m --
+      // one metre above a formation the drone was already descending out of. It
+      // only did no harm because the drone refused with BAD_STATE.
       if (_landCommanded.contains(droneId)) {
         logWarn('Drone $droneId reports it is airborne, but we have already sent '
-            'it LAND - not adopting. Start it again once it is on the ground.',
+            'it LAND - leaving it alone. Start it again once it is on the ground.',
             _tag);
+        return;
+      }
+      if (!isRunning || _flying) {
+        _sendStrayHome(droneId);
         return;
       }
       final anchor = arrived.target;
@@ -789,6 +828,17 @@ class DemoRunner extends ChangeNotifier {
     }
 
     _everAirborne.add(droneId);
+
+    // Flying to a point we named is proof we were heard, and this report says so
+    // repeatedly -- it is retried until we acknowledge it, unlike the single ACK
+    // that may already have been lost.
+    _tracker.confirm(droneId, (m) => m is StartDemoMessage,
+        'its own arrival report');
+    _tracker.confirm(
+        droneId,
+        (m) => m is MoveMessage &&
+            _distance(m.target, arrived.target) <= _targetMatchMeters,
+        'ARRIVED at the point it named');
 
     // An arrival IS contact, and it is the most recent contact there is -- it is
     // acknowledged and retried, so it reached us on purpose, unlike a telemetry
@@ -876,6 +926,13 @@ class DemoRunner extends ChangeNotifier {
   /// Or nothing comes back at all after every retry, which is real evidence of a
   /// drone that cannot be reached -- see [_onFailed].
   void _probeStraggler(int droneId, DemoProgress p, DateTime now) {
+    // One question at a time. A probe lives for `ackTimeout * maxAttempts` -- on
+    // 2026-08-11 that was 32 s against a 4 s probe interval, so eight retrying
+    // STATUS chains piled onto one drone and the log shows four of them
+    // overlapping. Asking more often cannot help a link that is already dropping
+    // frames; it is the thing that makes it drop more.
+    if (_tracker.isAwaitingAck(droneId)) return;
+
     final last = _lastProbe[droneId];
     if (last != null && now.difference(last) < stragglerProbeInterval) return;
     _lastProbe[droneId] = now;
@@ -936,6 +993,19 @@ class DemoRunner extends ChangeNotifier {
       return false;
     }
     if (speed > stationarySpeedMeters) return false;
+
+    // At the formation's height, not merely above its vertex. On 2026-08-11 this
+    // check was missing and the repair credited a drone reporting `alt: -0.04`
+    // with `st: HOVER` -- sitting on the ground under a pilot who had taken
+    // LOITER. Horizontal position said vertex 0; altitude said the drone was not
+    // in the formation at all, and altitude was right.
+    if ((t.altitude - _altitude).abs() > altitudeToleranceMeters) {
+      logWarn('Drone $droneId is over vertex $vertex but at '
+          '${t.altitude.toStringAsFixed(2)}m, not the formation\'s '
+          '${_altitude.toStringAsFixed(1)}m - not crediting an arrival for a '
+          'drone that is not at the formation\'s height', _tag);
+      return false;
+    }
 
     final from = _legOrigin(p);
     final back = _distance(t.position, from);
@@ -1079,7 +1149,11 @@ class DemoRunner extends ChangeNotifier {
         continue;
       }
       if (p.figure.isEmpty) {
-        _landInPlace(id, 'no anchor - START_DEMO ACK carried no position');
+        // No anchor yet, so there is nowhere to send it -- but the opening
+        // `ARRIVED` carries the anchor too, and it is retried until we take it.
+        // Leave it hovering and let adoption anchor it.
+        logWarn('Drone $id has no anchor yet - holding it out of the figure until '
+            'its arrival report gives us one', _tag);
         continue;
       }
 
@@ -1127,7 +1201,12 @@ class DemoRunner extends ChangeNotifier {
     final p = _progress[droneId];
     if (p == null || !p.isActive) return;
     if (p.figure.isEmpty) {
-      _landInPlace(droneId, 'no anchor - START_DEMO ACK carried no position');
+      // Nowhere to send it, because we never learned its anchor. That is missing
+      // data on our side, not a fault of the aircraft, and the drone's opening
+      // `ARRIVED` still carries the anchor -- so wait for it rather than land a
+      // drone that is hovering perfectly well.
+      logWarn('Drone $droneId has no anchor yet - not stepping it until its '
+          'arrival report gives us one', _tag);
       return;
     }
     final vertex = steps % p.figure.length;
@@ -1197,9 +1276,16 @@ class DemoRunner extends ChangeNotifier {
       if (p.phase == DemoPhase.stepping &&
           left != null &&
           now.difference(left) > legTimeout) {
-        _landInPlace(id, 'no arrival reported within '
-            '${legTimeout.inSeconds}s of being sent to vertex '
-            '${p.steps % (p.figure.isEmpty ? 1 : p.figure.length)}');
+        // Not landed. By now this drone has been probed repeatedly, so one of two
+        // things is true: it answered and something outside our control has it --
+        // on 2026-08-11 that was the pilot taking LOITER, and landing a drone the
+        // pilot is flying is the worst thing the app could do -- or it answered
+        // nothing, and a LAND would not arrive either.
+        _dropFromFormation(id,
+            'no arrival within ${legTimeout.inSeconds}s',
+            'Drone $id never reported reaching vertex '
+                '${p.steps % (p.figure.isEmpty ? 1 : p.figure.length)} in '
+                '${legTimeout.inSeconds}s');
         continue;
       }
 
@@ -1259,8 +1345,13 @@ class DemoRunner extends ChangeNotifier {
       // The settle is time it is meant to be standing there, so it does not
       // count against the drone.
       if (now.difference(entry.value) > barrierTimeout + settleDelay) {
-        _landInPlace(entry.key,
-            'held ${barrierTimeout.inSeconds}s waiting for a clear step');
+        // It is hovering exactly where we told it to and waiting for us to find
+        // it a clear step. The deadlock is ours; it is not a fault of the
+        // aircraft, so it does not earn a landing.
+        _dropFromFormation(entry.key,
+            'held ${barrierTimeout.inSeconds}s with no clear step',
+            'Drone ${entry.key} waited ${barrierTimeout.inSeconds}s for a step '
+                'that never cleared');
       }
     }
 
@@ -1274,7 +1365,11 @@ class DemoRunner extends ChangeNotifier {
 
     final anchor = ack.position;
     if (anchor == null) {
-      _landInPlace(droneId, 'START_DEMO ACK carried no position');
+      // The one thing this ACK was for, missing. Not fatal: the drone's opening
+      // `ARRIVED` echoes its anchor as `to` and is retried until acknowledged,
+      // which is a sturdier carrier than a single unrepeated ACK.
+      logWarn('Drone $droneId acknowledged START_DEMO without a position - '
+          'waiting for its arrival report to anchor the figure', _tag);
       return;
     }
 
@@ -1314,30 +1409,10 @@ class DemoRunner extends ChangeNotifier {
     }
     if (!p.isActive) return;
 
-    // A straggler probe that went unanswered through every retry. This is the
-    // one place silence becomes evidence: we did not wait for a report the drone
-    // might never have sent, we asked a question on the acknowledged channel and
-    // got nothing back. A drone that cannot hear us or cannot answer is not one
-    // whose position the formation's geometry can rest on.
-    if (failure.message is StatusMessage) {
-      _landInPlace(failure.droneId, 'overdue at its vertex and did not answer '
-          'STATUS: ${failure.description}');
-      return;
-    }
-
-    if (failure.message is! StartDemoMessage && failure.message is! MoveMessage) {
-      return;
-    }
-
     // BUSY answering a START_DEMO for a drone that is already in THIS run means
     // "already doing what you asked". It is the drone agreeing with us, and
-    // landing it for that is perverse.
-    //
-    // The earlier version of this only forgave BUSY on a *retry* of one command.
-    // On 2026-08-10 the app sent ten separate START_DEMOs to node 1 over a minute
-    // -- a lost ACK, then an operator pressing JOIN -- so every one of them was a
-    // first attempt, every BUSY counted as a rejection, and each one landed a
-    // drone that was flying the figure correctly at the time.
+    // landing it for that is perverse. [CommandTracker] now settles the command
+    // outright on BUSY, so this is the belt to that braces.
     if (failure.kind == AckFailureKind.rejected &&
         failure.reason == NackError.busy &&
         failure.message is StartDemoMessage) {
@@ -1347,10 +1422,112 @@ class DemoRunner extends ChangeNotifier {
       return;
     }
 
-    _landInPlace(failure.droneId, failure.description);
+    // Everything past here is a command we could not confirm, and NONE of it
+    // lands a drone.
+    //
+    // The two cases are exhaustive and neither is helped by a LAND. Either the
+    // drone is fine and the ACK was lost -- landing destroys a good flight, which
+    // is what happened three times on 2026-08-11 -- or the drone genuinely cannot
+    // be reached, in which case a LAND cannot reach it either, and the honest
+    // thing is to say so rather than to send a frame into the dark and mark the
+    // drone as landing. Its own no-contact timer covers the second case.
+    //
+    // Landing stays for drones that are reachable AND misbehaving: off a vertex,
+    // grounded mid-formation, converging with a neighbour. Those we can see, and
+    // there a LAND both arrives and helps.
+    if (failure.message is StatusMessage) {
+      // The probe was the recovery attempt. It failing means the state is not
+      // recoverable by any means we have.
+      _dropFromFormation(failure.droneId,
+          'unreachable while overdue at its vertex: ${failure.description}',
+          'Drone ${failure.droneId} is overdue at its vertex and answered '
+              'nothing at all (${failure.description})');
+      return;
+    }
+
+    if (failure.message is! StartDemoMessage && failure.message is! MoveMessage) {
+      return;
+    }
+
+    // A drone that is up, anchored and in contact has told us more about itself
+    // than the missing ACK ever would. Keep it.
+    //
+    // Silence only. A NACK is the drone *refusing* -- positive evidence that the
+    // command was not obeyed, from the drone's own mouth -- and there is nothing
+    // to recover: it will not fly the leg, it knows it, and it can hear us. That
+    // belongs with the reachable-and-misbehaving cases, which still land.
+    if (failure.kind != AckFailureKind.rejected &&
+        _everAirborne.contains(failure.droneId) &&
+        p.figure.isNotEmpty &&
+        _hasRecentContact(failure.droneId)) {
+      logWarn('Drone ${failure.droneId}: ${failure.description}, but it is '
+          'airborne, anchored and still in contact - keeping it in the formation. '
+          'A missing ACK is not a missing drone.', _tag);
+      _tracker.dismissFailure(failure.droneId);
+      return;
+    }
+
+    if (failure.kind == AckFailureKind.rejected) {
+      _landInPlace(failure.droneId, failure.description);
+      return;
+    }
+
+    _dropFromFormation(failure.droneId, failure.description,
+        'Drone ${failure.droneId}: ${failure.description}');
+  }
+
+  /// Have we heard anything from this drone recently enough to believe in it?
+  ///
+  /// Deliberately generous, and deliberately *any* frame rather than a position:
+  /// this decides whether we still have a working relationship with the drone,
+  /// not whether we know where it is to the metre.
+  bool _hasRecentContact(int droneId) {
+    final last = _lastFix[droneId];
+    if (last == null) return false;
+    return DateTime.now().difference(last) < legTimeout;
+  }
+
+  /// Stop commanding this drone, and stop claiming to know what it is doing.
+  ///
+  /// The alternative to landing, and the right answer whenever the reason we lost
+  /// confidence is our own -- a command we could not confirm, a report that never
+  /// came -- rather than something the drone did wrong. It keeps flying, it keeps
+  /// whatever position it had, and it stops being part of the formation's
+  /// geometry, so nobody waits at a barrier for it.
+  ///
+  /// It is not abandoned. Keepalives only go to active drones, so a drone dropped
+  /// here stops receiving them and lands itself on the mission's own 30 s
+  /// no-contact timer -- which is drone-side, needs no radio, and was observed
+  /// working on 2026-08-11 (`raspi4.log` 17:13:47, "Brak łączności od 30s -
+  /// ląduję"). That gives the pilot half a minute with an aircraft that is still
+  /// exactly where it was, and it is the outcome an unreachable drone gets
+  /// anyway: a `LAND` we cannot deliver is a `LAND` that does not happen.
+  void _dropFromFormation(int droneId, String detail, String announcement) {
+    final p = _progress[droneId];
+    if (p == null || !p.isActive) return;
+
+    _progress[droneId] = p.copyWith(phase: DemoPhase.stopped, detail: detail);
+    _heldSince.remove(droneId);
+    _steppingSince.remove(droneId);
+    _lastProbe.remove(droneId);
+    _conflicts.setTarget(droneId, null);
+    final abandoned = _pendingMove.remove(droneId);
+    if (abandoned != null) _tracker.withdraw(abandoned);
+    _tracker.dismissFailure(droneId);
+    logError('$announcement - dropped from the formation, NOT landed. It is '
+        'still flying: take it manually, or let it land itself when the '
+        'keepalives stop.', _tag);
+    notifyListeners();
+    _releaseBarrier();
   }
 
   /// Drop this drone out of the shared altitude, where it stands.
+  ///
+  /// Reserved for a drone that is doing something wrong and can still hear us --
+  /// off its vertex, on the ground mid-formation, converging with a neighbour.
+  /// A command we could not confirm is *not* one of those cases: see
+  /// [_dropFromFormation], and [CommandTracker.confirm] for why an unconfirmed
+  /// command usually means a lost ACK rather than a lost drone.
   ///
   /// Straight down, never `RTH`: a return home would fly it horizontally across
   /// the other circles at exactly the altitude they are using.
@@ -1362,13 +1539,8 @@ class DemoRunner extends ChangeNotifier {
       // Never left the ground -- usually a drone that is switched off, which a
       // broadcast START_DEMO still addresses. A LAND nobody answers would
       // escalate into aborting the drones that ARE flying.
-      _progress[droneId] =
-          p.copyWith(phase: DemoPhase.stopped, detail: 'never airborne: $reason');
-      _heldSince.remove(droneId);
-      logWarn('Drone $droneId never took off ($reason) - dropped from the '
-          'formation, not landed', _tag);
-      notifyListeners();
-      _releaseBarrier();
+      _dropFromFormation(droneId, 'never airborne: $reason',
+          'Drone $droneId never took off ($reason)');
       return;
     }
 

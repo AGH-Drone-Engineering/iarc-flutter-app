@@ -226,7 +226,7 @@ void main() {
 
   // ---- BUSY answering our own retry is not a rejection ---------------------
 
-  test('BUSY on a retried START_DEMO waits for the ACK instead of aborting',
+  test('BUSY on a retried START_DEMO settles it - the ACK can never come',
       () async {
     final sender = FakeSender();
     final tracker = CommandTracker(
@@ -254,19 +254,25 @@ void main() {
 
     expect(failures, isEmpty,
         reason: 'aborting here lands a drone that is already climbing');
+    expect(tracker.isAwaitingAck(1), isFalse,
+        reason: 'the drone told us it holds the command, so it is settled; the '
+            'ACK it would send has already been consumed and every future copy '
+            'can only be answered BUSY again');
 
+    // Nothing keeps ticking, so nothing can time out later and land a drone that
+    // is by then flying the figure -- which is what happened on 2026-08-11.
     final before = sender.sent.length;
-    await Future<void>.delayed(const Duration(milliseconds: 120));
-    expect(sender.sent.length, before,
-        reason: 'asking again can only be answered BUSY again');
+    await Future<void>.delayed(const Duration(milliseconds: 200));
+    expect(sender.sent.length, before);
+    expect(failures, isEmpty);
 
-    // The real ACK still lands and still anchors the figure.
+    // A late ACK is now a duplicate. It must not be reported as an acknowledgement
+    // twice, and the anchor comes from the drone's arrival report instead.
     tracker.handleIncoming(
       1,
       AckMessage(seq: 501, respondingTo: seq, position: const LatLng(50.0, 19.0)),
     );
-    expect(acked, hasLength(1));
-    expect(acked.single, isA<StartDemoMessage>());
+    expect(acked, isEmpty);
 
     tracker.dispose();
   });

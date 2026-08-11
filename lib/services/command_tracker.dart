@@ -54,11 +54,6 @@ class _PendingGroup {
 
   int attempts = 1;
   Timer? timer;
-
-  /// Keep waiting for the ACK, but stop retransmitting. Set when the drone has
-  /// told us it already has this command, so asking again can only be answered
-  /// the same way.
-  bool quiet = false;
 }
 
 class CommandTracker extends ChangeNotifier {
@@ -155,6 +150,38 @@ class CommandTracker extends ChangeNotifier {
     await _send(dest, build(_seq.take()));
   }
 
+  /// Settle a pending command from evidence other than its own ACK.
+  ///
+  /// An ACK is one way to learn a command was obeyed; it is not the only way and
+  /// it is the least reliable, because it is sent once and never repeated. The
+  /// drone's *behaviour* says the same thing and says it repeatedly: a drone that
+  /// reports `MISSION_START` has started the demo, one that reports `ARRIVED` at
+  /// the point a `MOVE` named has flown that `MOVE`, one that answers `BUSY` is
+  /// telling us outright that it already holds the command.
+  ///
+  /// On 2026-08-11 the cost of not doing this was three destroyed flights. A
+  /// `START_DEMO` was accepted, its ACK was lost, the retry was refused `BUSY`,
+  /// and the group sat there until its attempts ran out -- at which point the app
+  /// landed a drone that had by then acknowledged two `MOVE`s and reported an
+  /// arrival. The ACK it was waiting for could never arrive: the drone had
+  /// consumed that `q` and would answer `BUSY` for ever.
+  ///
+  /// [proves] picks the commands this evidence settles. Nothing is reported to
+  /// [onAcknowledged] -- there is no `AckMessage` to hand over, and callers that
+  /// need the ACK's payload (the anchor in a `START_DEMO` ACK) have to recover it
+  /// from the evidence itself.
+  void confirm(int droneId, bool Function(MissionMessage) proves, String evidence) {
+    final settled = _groups.values
+        .where((g) => g.awaiting.contains(droneId) && proves(g.message))
+        .toList();
+    for (final group in settled) {
+      logInfo('${group.message.type} q=${group.seq} confirmed by $evidence after '
+          '${group.attempts} attempt(s) — no ACK needed', _tag);
+      _resolve(droneId, group.seq);
+    }
+    if (settled.isNotEmpty) _clearFailureOnContact(droneId);
+  }
+
   /// Stops chasing an ACK for [seq]: no more retries, and no failure reported.
   ///
   /// For a command the drone can still usefully act on, letting the retries run
@@ -187,16 +214,6 @@ class CommandTracker extends ChangeNotifier {
     }
 
     group.attempts++;
-
-    if (group.quiet) {
-      // The drone has said it already holds this command. Let the attempt clock
-      // run so a drone that then goes silent is still reported, but do not add
-      // a frame that can only be refused again.
-      logTrace(_tag, '${group.message.type} q=${group.seq} not resent '
-          '(attempt ${group.attempts}/$maxAttempts) — already accepted');
-      _arm(group);
-      return;
-    }
 
     logWarn(
       'Retrying ${group.message.type} (attempt ${group.attempts}/$maxAttempts) — '
@@ -245,27 +262,33 @@ class CommandTracker extends ChangeNotifier {
       case NackMessage(:final respondingTo, :final error):
         final group = _groups[respondingTo];
 
-        // BUSY answering a retry of a start command is almost certainly our own
-        // duplicate coming back: the drone accepted attempt 1, its ACK was lost,
-        // and by the time we asked again it was no longer IDLE. Reporting that
-        // as a rejection aborts a demo that is in fact starting -- and would
-        // land a drone that is already climbing.
+        // BUSY answering a start command is the drone telling us it is already
+        // running one. That is not a rejection, it is a *confirmation* -- and the
+        // strongest kind, because the drone is reporting its own state rather
+        // than echoing our frame. Whether this is attempt 1 (a demo left running
+        // from before) or attempt 6 (our own duplicate arriving after the first
+        // was accepted and its ACK lost), the command is in force.
         //
-        // So: stop asking, because further attempts can only produce more BUSY,
-        // but keep listening. The genuine ACK still resolves the group and
-        // anchors the figure; if it never arrives the ordinary silence timeout
-        // reports it, which is the truth -- we do not know where the drone is.
+        // Earlier this only silenced the retransmissions and let the attempt
+        // clock run out, on the reasoning that without the ACK we still did not
+        // know where the drone was. That was wrong twice: the ACK could never
+        // arrive, because the drone had consumed the `q` and would answer BUSY
+        // for ever; and by the time the clock expired the drone had told us where
+        // it was several times over. On 2026-08-11 it cost three flights.
+        // Only from attempt 2 on. A BUSY answering the *first* copy cannot be our
+        // own duplicate -- the drone was already running something we did not
+        // start -- and that is a real rejection the operator should see.
         if (group != null &&
             error == NackError.busy &&
             group.attempts > 1 &&
             group.message is StartDemoMessage) {
-          group.quiet = true;
           logWarn(
             '${group.message.type} q=$respondingTo answered BUSY on attempt '
-            '${group.attempts} — drone $from most likely accepted our first '
-            'attempt; waiting for its ACK instead of aborting',
+            '${group.attempts} — drone $from already holds it, which settles it. '
+            'The anchor comes from its arrival report instead of this ACK',
             _tag,
           );
+          _resolve(from, respondingTo);
           _clearFailureOnContact(from);
           return;
         }
@@ -286,6 +309,10 @@ class CommandTracker extends ChangeNotifier {
         }
 
       default:
+        // Any frame at all settles an outstanding probe: a probe asks nothing
+        // more than "are you there", and this is the answer whatever its type.
+        // It also stops probes piling up on a drone that is merely quiet.
+        confirm(from, (m) => m is StatusMessage, '${message.type} from the drone');
         _clearFailureOnContact(from);
     }
   }
