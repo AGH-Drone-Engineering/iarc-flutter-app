@@ -43,7 +43,6 @@ class _EspDataTabState extends State<EspDataTab>
           else
             const _UdpSection(),
           const SizedBox(height: 16),
-          const _AckSection(),
           const SizedBox(height: 16),
           const _DebugSection(),
           const SizedBox(height: 12),
@@ -373,56 +372,6 @@ class _UdpSectionState extends State<_UdpSection> {
             _kv(context, 'Reachable',
                 reachable.isEmpty ? 'none' : reachable.map(Drone.nameFor).join(', ')),
           ],
-        ],
-      ),
-    );
-  }
-}
-
-class _AckSection extends StatelessWidget {
-  const _AckSection();
-
-  @override
-  Widget build(BuildContext context) {
-    final app = context.watch<AppState>();
-    final worst = app.config.worstCaseWait.inMilliseconds / 1000;
-
-    return _Card(
-      title: 'ACK & retries',
-      subtitle: 'How long a command waits for the drone to acknowledge it, and '
-          'how many times it is resent on the same sequence number. Applies to '
-          'every message, on either transport.',
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Row(
-            children: [
-              Expanded(
-                flex: 2,
-                child: _NumberField(
-                  label: 'ACK timeout',
-                  suffix: 'ms',
-                  value: app.config.ackTimeoutMs,
-                  min: kAckTimeoutMsRange.min,
-                  max: kAckTimeoutMsRange.max,
-                  onChanged: app.setAckTimeoutMs,
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: _NumberField(
-                  label: 'Attempts',
-                  value: app.config.maxAttempts,
-                  min: kMaxAttemptsRange.min,
-                  max: kMaxAttemptsRange.max,
-                  onChanged: app.setMaxAttempts,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          _kv(context, 'Silent drone reported after',
-              '${worst.toStringAsFixed(1)} s'),
         ],
       ),
     );

@@ -161,7 +161,11 @@ The ground station picks the height so the return misses the formation — see �
 { "v": 1, "q": 7, "t": "STATUS" }
 ```
 
-Reply with `ACK`, then a `TELEM`.
+Reply with a `TELEM`. Nothing else — there is no `ACK` (§7).
+
+Sent only when the operator asks for it. It used to double as a keepalive on a
+timer, which is what kept the drone's no-contact auto-land at bay; both are gone,
+so this is now purely "tell me where you are, now".
 
 ### `PING`
 
@@ -215,11 +219,12 @@ are cut regardless of what cut them.
 | `re`         | int   | The `q` being acknowledged                       |
 | `lat`, `lon` | float | Position when the command was accepted. Optional. |
 
-Means received and accepted, not completed. Completion is reported via `EVT`.
+**Retained in the codec, no longer sent.** The drones do not acknowledge
+commands (§7); a ground station may still receive one from older firmware and
+MUST treat it as nothing more than proof of contact.
 
-`lat`/`lon` are sent whenever the drone has a fix. They cost nothing extra on
-the wire and make every acknowledgement a position fix, which is what lets a
-`START_DEMO` `ACK` double as the demo's anchor.
+The anchor a `START_DEMO` `ACK` used to carry now comes from the opening
+`ARRIVED`, whose `to` is the anchor.
 
 ### `NACK`
 
@@ -362,8 +367,8 @@ zero — no `TELEM` at all.**
 
 `TELEM` is therefore **advisory**: it is what puts a moving dot on the operator's
 map, and nothing in a mission may be gated on it. A demo sequence advances on
-`ARRIVED`, which is acknowledged and retried; a ground station that instead
-inferred arrival from a `TELEM` state change would stop working the moment the
+`ARRIVED`; a ground station that instead inferred arrival from a `TELEM` state
+change would stop working the moment the
 rate was turned down, and would be inferring it from a stream that can drop
 frames silently in any case.
 
@@ -447,9 +452,9 @@ across unverified ground.
 | `spd` | float    | Ground speed when it declared arrival, m/s. Optional.                  |
 
 The drone has stopped on the point it was sent to. This is the **only** message
-that advances a demo sequence, so it is a report (§7) and not an `EVT`: it is
-retried until acknowledged, because a lost arrival is a formation that never
-takes another step.
+that advances a demo sequence, so it names its own step rather than
+relying on order: `to` is echoed back, which an `EVT` could not do. Delivery is
+the radio's business (§7).
 
 `to` is what makes the report self-identifying, and it is required for a reason.
 The ground station commands one vertex at a time, so an arrival whose `to` is
@@ -464,8 +469,8 @@ take it. A drone must not send `ARRIVED` while still moving: report it once the
 vehicle has settled, not the moment the target radius is entered.
 
 `ARRIVED` is also sent once after takeoff, with `to` set to the anchor, so the
-opening barrier of a demo rests on the same acknowledged message as every later
-step rather than on `EVT`/`MISSION_START`.
+opening barrier of a demo rests on the same self-identifying message as every
+later step rather than on `EVT`/`MISSION_START`.
 
 ### `PONG`
 
@@ -508,57 +513,67 @@ downlink loss = 1 - pongs_received / tx
 
 ## 7. Reliability
 
-### Command ACK
+**Delivery belongs to the LoRa layer. Nothing in this protocol retries, and
+nothing in it is acknowledged.**
 
-1. Every ground→drone command carries a unique `q`.
-2. The drone MUST reply `ACK` or `NACK` with `re` = that `q`.
-3. The ground station times out after 2000 ms and retries, 3 attempts total.
-4. Retries reuse the original `q`.
-5. After the final expiry the command is reported to the operator as unacknowledged.
+Every message is transmitted exactly once. The radio layer holds pending frames
+in the ESP's own buffer and repeats them until they land; it knows within
+milliseconds whether a frame was heard, which is a thing this layer could only
+guess at after seconds.
 
-Broadcast commands are tracked per drone: each drone ACKs individually.
+### Why the acknowledgements were removed
 
-### Report ACK (`MINE`, `SCAN`, `ARRIVED`)
+They were counter-productive at both ends of the stack.
 
-Reports travel the other way and nothing repeats them. `TELEM` can be lost
-harmlessly because another one follows — when the rate is not zero — but a lost
-`MINE` is a mine nobody ever hears about again, a lost `SCAN` is ground the
-planner must keep treating as unsearched, and a lost `ARRIVED` is a formation
-that never takes another step. So these three are acknowledged in the reverse
-direction:
+A retry from the ground station travels phone → USB → ESP → air and joins the
+same four-slot outbound queue the original frame is already waiting in. Under
+loss that offered *more* frames to a channel already dropping a third of them,
+and the overflow was discarded silently. The same held on the drone.
 
-1. The drone sends `MINE` / `SCAN` / `ARRIVED` with a unique `q` and keeps it
-   queued.
-2. The ground station MUST reply `ACK` with `re` = that `q`. It is an
-   acknowledgement of *receipt*, not of anything the operator did with it.
-3. The drone resends until acknowledged, backing off 2.5 s → 5 → 10 → 20 → 30 s
-   and then every 30 s. There is no attempt limit: an unreported mine is worse
-   than a busy radio.
-4. Retries reuse the original `q`, so the ground station can tell a repeat from
-   a second report.
-5. The ground station MUST answer a repeat with a fresh `ACK` — if it stays
-   silent because it already recorded that report, the drone retries for ever —
-   and MUST NOT act on it twice. For `ARRIVED` that second point is not
-   bookkeeping: acting on a repeat would release the same barrier twice and step
-   the formation a vertex further than any drone has flown.
-6. Nothing else is acknowledged this way. `TELEM` and `EVT` stay fire-and-forget.
+Worse, an `ACK` is the least reliable message in the set: it is sent once and
+never repeated, so it is the likeliest thing to be lost — and its loss used to be
+read as the *command* having failed. On 2026-08-11 that landed three healthy
+drones mid-figure, each still flying the formation correctly at the moment the
+app gave up on it.
 
-A drone that cannot deliver a report keeps it across the rest of the flight; the
-queue is bounded, and on overflow `SCAN` is dropped before `MINE`.
+### How a sender learns a command was obeyed
 
-#### Implicit acknowledgement of `ARRIVED`
+From what the drone does, not from a receipt:
 
-A silent `ARRIVED` is ambiguous from the drone's side: either the report did not
-arrive, or it did and the `ACK` was lost coming back. One case has an answer.
+| Command | Evidence it was obeyed |
+| --- | --- |
+| `START_DEMO` / `START_MAIN` | `EVT MISSION_START`, the opening `ARRIVED`, or any airborne `TELEM` state |
+| `MOVE` | `EVT WAYPOINT_REACHED`, then `ARRIVED` echoing the `to` it was given |
+| `LAND` / `RTH` | `TELEM` reporting `LANDING`/`RTH`, then `EVT LANDED` |
+| `STATUS` | the `TELEM` it provokes |
 
-A `MOVE` the drone has **not seen before** proves the ground station processed
-the arrival — it commands one vertex at a time and only steps a drone it has seen
-arrive, so the next step could not exist otherwise. On accepting such a `MOVE`
-the drone MUST retire any queued `ARRIVED` and stop resending it.
+Every one of those repeats of its own accord, which is exactly what an `ACK`
+never did. A drone that has gone quiet is detected by the *absence of all of
+them*, not by one missing receipt.
 
-"Not seen before" is exactly the §7 retransmission test: a repeated `q` is
-answered from the reply cache and never reaches the accept path, so it cannot
-retire anything.
+### `NACK` stays
+
+A `NACK` is not an acknowledgement — it is the only way a drone can say "I will
+not do this", and it carries a reason (`NO_GPS`, `BAD_STATE`, `GEOFENCE`, …). It
+says what will **not** happen, which no silence can. It is sent once, like
+everything else, and the operator is shown it.
+
+`BUSY` answering a start command is the exception that proves the rule: it means
+the drone is already running a mission, which is agreement rather than refusal.
+
+### Duplicate suppression
+
+Retries are gone, so a repeated `q` can now only mean the radio delivered one
+frame twice. Both ends still guard against it, because the cost is asymmetric:
+
+- a repeated `MOVE` would step the formation a vertex past where any drone has
+  flown;
+- a repeated `ARRIVED` would release the same barrier twice;
+- a repeated `MINE` would put the same mine on the map twice.
+
+So a receiver MUST ignore a `q` it has already acted on (see §7 *Sequence
+numbers*). It does **not** reply to the duplicate — there is nothing to reply
+with.
 
 ### Polling (LoRaCom only)
 
@@ -574,18 +589,13 @@ LoRaCom is host-initiated; the board never pushes. The ground station:
 
 - `q` increments per message per sender and wraps at 65535.
 - Receivers MUST NOT assume `q` arrives in order or without gaps.
-- A repeated `q` from the same sender within 5 s **of the last time that `q` was
-  seen** MUST be treated as a retransmission: re-send the cached reply, do not
-  repeat the action, and restart the 5 s from this repeat.
+- A repeated `q` from the same sender within 5 s of the last time that `q` was
+  seen MUST be treated as a duplicate delivery: do not repeat the action, and do
+  not reply. Restart the 5 s from this repeat.
 
-  Measuring the window from the *first* reply instead caps protection at a fixed
-  5 s no matter how many retries arrive — with a 2 s retry interval the third
-  retransmission lands outside it and the command executes a second time. The
-  window must last as long as the sender keeps asking.
-
-- Consequently a sender's retry interval MUST be shorter than 5 s. A retry that
-  arrives after the window has lapsed is not a retransmission, it is a new
-  command carrying an old order, and the receiver cannot tell the difference.
+  Nothing in this protocol retransmits, so a duplicate can only come from the
+  radio layer delivering one frame twice — a rare event, and one the 5 s window
+  covers with room to spare.
 
 ## 8. Demo sequencing
 
@@ -593,17 +603,22 @@ The ground station holds the choreography and issues it one waypoint at a time.
 The drone flies where it is told and reports arrival; it stores no routine.
 
 ```
-START_DEMO ──ACK(lat,lon)──► ARRIVED(anchor) ──► MOVE ──ACK──► ARRIVED(to,at) ──► MOVE ──► …
-                               │                   │             │
-                            no ACK               NACK      to ≠ live step
-                               │                   │             │
-                               └────── RTH ────────┘          LAND
+START_DEMO ──► ARRIVED(anchor) ──► MOVE ──► ARRIVED(to,at) ──► MOVE ──► …
+                    │                          │
+              nothing at all               to ≠ live step
+                    │                          │
+                    └─── drop from formation   └── LAND
+
+The anchor comes from the opening `ARRIVED` -- its `to` IS the anchor -- not from
+a `START_DEMO` receipt.
 ```
 
-1. `START_DEMO` arms the drone and takes it to `alt`. Its `ACK` carries the
-   drone's position — the anchor the ground station lays the figure around.
-2. Once airborne and holding over that anchor the drone sends `ARRIVED` with
-   `to` = the anchor. That opens the sequence.
+1. `START_DEMO` arms the drone and takes it to `alt`. Nothing is sent back
+   immediately — the drone is busy arming and climbing, which can take half a
+   minute.
+2. Once airborne and holding over its takeoff point the drone sends `ARRIVED` with
+   `to` = that point. **This is both "I am ready" and the anchor** the ground
+   station lays the figure around, and it opens the sequence.
 3. On `ARRIVED` — and on nothing else — the ground station sends the next `MOVE`.
    `EVT`/`WAYPOINT_REACHED` is still sent for the operator, but it is not a gate:
    it is unacknowledged, carries no position, and names no waypoint.
@@ -612,15 +627,39 @@ START_DEMO ──ACK(lat,lon)──► ARRIVED(anchor) ──► MOVE ──ACK�
    be within its arrival tolerance of it. Either failing means the drone is not
    where the formation's geometry says it is, and it is landed rather than
    advanced.
-5. A `MOVE` the ground station has superseded MUST NOT be retried. Once a drone
-   has been seen to arrive at vertex *k*, the outstanding `MOVE` for *k* has done
-   its job whether or not its `ACK` came back; retrying it later reuses the
-   original `q`, which outside the retransmission window is a fresh order to fly
-   back to a vertex the formation has left.
-6. If a command is never acknowledged (§7, attempts exhausted) **or** is answered
-   with `NACK`, the ground station stops advancing that drone's sequence and
-   brings it down.
+5. Nothing retries a `MOVE`, so a superseded one cannot come back. This used to
+   need saying: a retry reused the original `q`, and outside the duplicate window
+   that was a fresh order to fly back to a vertex the formation had left.
+6. A command answered with `NACK` stops that drone's sequence and brings it down —
+   the drone has said it will not fly the step. **Silence does not.** A drone that
+   simply stops reporting is dropped from the formation and left flying, for its
+   pilot; see §7 for why a missing message is not evidence of a missing drone.
 7. `EVT`/`MISSION_DONE` or `EVT`/`LANDED` ends the sequence normally.
+
+### There are no timeouts
+
+Neither end runs a clock. The ground station waits for `ARRIVED` and nothing else;
+the drone waits for a command and nothing else. A lost report leaves the formation
+hovering on its current vertex indefinitely, which is the safe way to be wrong and
+undoes itself if the report turns up late.
+
+Two things resolve the stall, and both are human:
+
+- **Force the next step.** The operator can send the next vertex to the whole
+  formation without waiting for every arrival. A drone that had not in fact
+  arrived is then a vertex out of phase, and lockstep's separation guarantee is
+  only true while every drone shares an index — so this is the operator's call to
+  make with eyes on the aircraft, which is why it is a button and not a timer.
+- **The pilots.** A drone landed manually reports `LANDING`/`IDLE`; the ground
+  station drops it from the formation without commanding anything, and it rejoins
+  on its next `START_DEMO` like any other drone.
+
+The drone's own no-contact auto-land is off by default
+(`--idle-timeout`, `demo_mission_with_app.py`). It used to be 30 s and relied on
+the ground station's keepalives, which no longer exist: silence is now the normal
+state of a formation waiting at a barrier, so that clock would end every muster.
+
+`STATUS` is sent only when the operator asks for it. Nothing polls.
 
 None of this depends on `TELEM`, which may be off entirely.
 

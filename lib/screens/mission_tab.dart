@@ -225,15 +225,6 @@ class _FleetCell extends StatelessWidget {
                   style: const TextStyle(fontWeight: FontWeight.w600),
                 ),
               ),
-              if (app.tracker.isAwaitingAck(drone.id))
-                SizedBox(
-                  width: 10,
-                  height: 10,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 1.5,
-                    color: scheme.primary,
-                  ),
-                ),
             ],
           ),
           const SizedBox(height: 2),
@@ -411,6 +402,32 @@ class _MissionStartSection extends StatelessWidget {
                   ],
                 );
               }),
+            if (app.demo.isFlying) ...[
+              const SizedBox(height: 8),
+              // Replaces the barrier timeout. Nothing lands a drone for being
+              // slow any more, so a lost arrival report leaves the formation
+              // standing still -- and this is how the operator, who can see the
+              // aircraft, decides that it should carry on regardless.
+              OutlinedButton.icon(
+                onPressed: () {
+                  final refusal = app.forceNextStep();
+                  if (refusal != null && context.mounted) {
+                    ScaffoldMessenger.of(context)
+                        .showSnackBar(SnackBar(content: Text(refusal)));
+                  }
+                },
+                icon: const Icon(Icons.skip_next),
+                label: const Text('FORCE NEXT STEP'),
+                style: OutlinedButton.styleFrom(
+                  minimumSize: const Size.fromHeight(48),
+                ),
+              ),
+              Text(
+                'Sends the next vertex without waiting for every arrival. A '
+                'drone that had not arrived ends up a vertex out of phase.',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ],
             const SizedBox(height: 8),
             FilledButton.icon(
               onPressed: app.stopDemo,

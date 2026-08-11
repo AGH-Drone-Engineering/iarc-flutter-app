@@ -166,48 +166,11 @@ class AppState extends ChangeNotifier {
     final p = await _ensurePrefs();
     final raw = p.getString(_kLinkKey);
     if (raw != null) config = LinkConfig.decode(raw, Drone.allIds);
-    _applyAckConfig();
-    // Said out loud at every launch: the decoder silently clamps a stored value
-    // that is out of range, and a retry interval is not something an operator
-    // should have to guess at after the fact.
-    logInfo('ACK timeout ${config.ackTimeoutMs} ms × ${config.maxAttempts} '
-        'attempts (max ${kAckTimeoutMsRange.max} ms - a retry must reach the '
-        'drone inside its $kDroneDedupeWindowMs ms retransmission window)',
-        _tag);
     notifyListeners();
   }
 
   Future<void> _saveLinkConfig() async {
     (await _ensurePrefs()).setString(_kLinkKey, config.encode());
-  }
-
-  /// The tracker is built before the stored config is read, so the settings
-  /// have to be pushed onto it rather than passed in.
-  void _applyAckConfig() {
-    tracker.ackTimeout = config.ackTimeout;
-    tracker.maxAttempts = config.maxAttempts;
-  }
-
-  Future<void> setAckTimeoutMs(int ms) async {
-    config = config.copyWith(
-      ackTimeoutMs: ms.clamp(kAckTimeoutMsRange.min, kAckTimeoutMsRange.max),
-    );
-    _applyAckConfig();
-    logInfo('ACK timeout ${config.ackTimeoutMs} ms '
-        '× ${config.maxAttempts} attempts', _tag);
-    notifyListeners();
-    await _saveLinkConfig();
-  }
-
-  Future<void> setMaxAttempts(int attempts) async {
-    config = config.copyWith(
-      maxAttempts: attempts.clamp(kMaxAttemptsRange.min, kMaxAttemptsRange.max),
-    );
-    _applyAckConfig();
-    logInfo('ACK timeout ${config.ackTimeoutMs} ms '
-        '× ${config.maxAttempts} attempts', _tag);
-    notifyListeners();
-    await _saveLinkConfig();
   }
 
   Future<void> setTransport(TransportKind kind) async {
@@ -339,18 +302,20 @@ class AppState extends ChangeNotifier {
     if (highest == null || seq > highest) _lastReportSeq[from] = seq;
   }
 
+  /// Czy ten raport widzimy pierwszy raz.
+  ///
+  /// Nie odsyłamy już żadnego ACK-a: dron nie czeka na potwierdzenie i niczego
+  /// nie powtarza, bo doniesienie ramki należy do warstwy LoRa. Pamięć o
+  /// widzianych `q` zostaje mimo to - gdyby radio dostarczyło ramkę dwa razy,
+  /// drugi ARRIVED przestawiłby szyk o wierzchołek za daleko, a druga mina
+  /// pojawiłaby się na mapie podwójnie.
   bool _acknowledgeReport(int from, int seq, String kind) {
-    unawaited(transport.sendMission(
-      from,
-      AckMessage(seq: tracker.nextSeq(), respondingTo: seq),
-    ));
-
     _forgetReportsIfCounterRestarted(from, seq);
 
     final key = '$from/$seq';
     if (!_reportsSeen.add(key)) {
-      logWarn('Powtórka $kind q=$seq od ${Drone.nameFor(from)} - nasze ACK '
-          'nie doszło; potwierdzam ponownie, nie działam drugi raz', _tag);
+      logWarn('Powtórka $kind q=$seq od ${Drone.nameFor(from)} - radio '
+          'dostarczyło ją dwa razy; pomijam, nie działam drugi raz', _tag);
       return false;
     }
     _reportOrder.add(key);
@@ -439,6 +404,14 @@ class AppState extends ChangeNotifier {
   String? beginFormation() {
     final refusal = demo.beginFormation();
     if (refusal != null) logWarn('Formation not released: $refusal', _tag);
+    notifyListeners();
+    return refusal;
+  }
+
+  /// Step the formation on without waiting for every arrival report.
+  String? forceNextStep() {
+    final refusal = demo.forceNextStep();
+    if (refusal != null) logWarn('Step not forced: $refusal', _tag);
     notifyListeners();
     return refusal;
   }

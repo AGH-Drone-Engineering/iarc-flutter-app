@@ -105,7 +105,7 @@ class _FleetSection extends StatelessWidget {
               padding: const EdgeInsets.only(bottom: 8),
               child: DroneStatusTile(
                 drone: d,
-                awaitingAck: app.tracker.isAwaitingAck(d.id),
+                awaitingAck: false,
                 failure: app.tracker.failureFor(d.id),
                 onTap: () => app.setSelectedTarget(d.id),
                 selected: app.selectedTarget == d.id,
