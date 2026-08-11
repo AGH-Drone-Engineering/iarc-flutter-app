@@ -168,7 +168,7 @@ class AppState extends ChangeNotifier {
     // should have to guess at after the fact.
     logInfo('ACK timeout ${config.ackTimeoutMs} ms × ${config.maxAttempts} '
         'attempts (max ${kAckTimeoutMsRange.max} ms - a retry must reach the '
-        'drone inside its ${kDroneDedupeWindowMs} ms retransmission window)',
+        'drone inside its $kDroneDedupeWindowMs ms retransmission window)',
         _tag);
     notifyListeners();
   }
@@ -399,11 +399,57 @@ class AppState extends ChangeNotifier {
     );
   }
 
+  /// Which drones this demo is for. An arbitrary subset, because which airframes
+  /// are on the field changes between tests -- "1, 2 and 4" has to be sayable.
+  ///
+  /// It also decides where the uplink goes. Broadcast addressed all four
+  /// regardless of what was switched on, so on 2026-08-10 half of every
+  /// `START_DEMO` burst and its retries went to drones that could never answer,
+  /// competing for airtime with the two that could.
+  final Set<int> demoRoster = {...Drone.allIds};
+
+  void toggleDemoRoster(int id) {
+    if (!demoRoster.remove(id)) demoRoster.add(id);
+    notifyListeners();
+  }
+
+  List<int> get _demoTargets {
+    final chosen = Drone.allIds.where(demoRoster.contains).toList();
+    return chosen.isEmpty ? Drone.allIds : chosen;
+  }
+
   Future<void> startDemo({int? target}) {
-    final dest = target ?? _selectedTarget;
-    final targets = dest == kBroadcastAddress ? Drone.allIds : <int>[dest];
+    final targets = target != null && target != kBroadcastAddress
+        ? <int>[target]
+        : _demoTargets;
     logTrace(_tag, 'startDemo alt=$demoAltitude targets=[${targets.join(",")}]');
     return demo.start(targets, demoAltitude);
+  }
+
+  /// Release the mustered drones onto the figure. Returns why it refused, if it
+  /// did, so the operator sees a reason rather than a button that does nothing.
+  String? beginFormation() {
+    final refusal = demo.beginFormation();
+    if (refusal != null) logWarn('Formation not released: $refusal', _tag);
+    notifyListeners();
+    return refusal;
+  }
+
+  /// Try again for a drone whose START_DEMO went unanswered, without disturbing
+  /// the ones already holding.
+  Future<String?> retryStart(int id) async {
+    final refusal = await demo.addDrones([id]);
+    if (refusal != null) logWarn('Could not re-add drone $id: $refusal', _tag);
+    notifyListeners();
+    return refusal;
+  }
+
+  /// Bring a joiner onto the formation's altitude, on its next step.
+  String? mergeIntoFormation(int id) {
+    final refusal = demo.mergeIntoFormation(id);
+    if (refusal != null) logWarn('Could not merge drone $id: $refusal', _tag);
+    notifyListeners();
+    return refusal;
   }
 
   void stopDemo() => demo.stop();

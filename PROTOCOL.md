@@ -109,15 +109,21 @@ Corner order is not significant; both ends normalise to a counter-clockwise loop
 { "v": 1, "q": 3, "t": "MOVE", "to": [50.062975, 19.9157] }
 ```
 
-| Field | Type  | Notes                                       |
-| ----- | ----- | ------------------------------------------- |
-| `to`  | array | Target `[lat, lon]` — latitude first        |
+| Field | Type  | Notes                                                                        |
+| ----- | ----- | ---------------------------------------------------------------------------- |
+| `to`  | array | Target `[lat, lon]` — latitude first                                         |
+| `alt` | float | Height for this hop, metres AGL. Optional — omit to fly it at the altitude `START_DEMO` set, which is every ordinary step. |
 
-Fly to `to`, holding the altitude set by `START_DEMO`. Absolute coordinates, so
-hops do not accumulate error and both ends agree on the frame without sharing an
-origin.
+Fly to `to`. Absolute coordinates, so hops do not accumulate error and both ends
+agree on the frame without sharing an origin.
 
-Arrival is reported with `EVT`/`WAYPOINT_REACHED`. Valid only in demo mode,
+`alt` is set only for a drone deliberately being flown off the rest — a joiner
+catching up with a moving figure (§8). Unlike `RTH`, no ordering is required: a
+joiner is on the same vertex index at both ends of the leg, so it keeps its anchor
+spacing from everybody while it changes height.
+
+Arrival is reported with `ARRIVED` (§6), which is what advances the sequence;
+`EVT`/`WAYPOINT_REACHED` is also sent, for the operator. Valid only in demo mode,
 otherwise `NACK`/`BAD_STATE`; a target outside the geo-cage is `NACK`/`GEOFENCE`.
 
 ### `LAND`
@@ -131,11 +137,23 @@ Descend and disarm at the current position.
 ### `RTH`
 
 ```json
-{ "v": 1, "q": 5, "t": "RTH" }
+{ "v": 1, "q": 5, "t": "RTH", "alt": 2.0 }
 ```
 
-Return to the launch point at the drone's assigned RTH altitude and land. The altitude
-is keyed off the drone's own number and is not a parameter.
+| Field | Type  | Notes                                                                    |
+| ----- | ----- | ------------------------------------------------------------------------ |
+| `alt` | float | Height for the return, metres AGL. Optional — omit for the drone's own assigned RTH altitude, keyed off its number. |
+
+Return to the launch point and land.
+
+**With `alt`, the drone MUST reach that height in place before it translates.**
+The ordering is the entire point. A single `go_to` changes position and height at
+once, so the drone leaves on a diagonal and passes through whatever altitude the
+rest of the formation is using, directly over their circles — which is why an
+abort used to be `LAND` and never this. Separating vertically *first* removes that
+objection; doing it at the same time does not.
+
+The ground station picks the height so the return misses the formation — see §8.
 
 ### `STATUS`
 
@@ -559,6 +577,41 @@ START_DEMO ──ACK(lat,lon)──► ARRIVED(anchor) ──► MOVE ──ACK�
 7. `EVT`/`MISSION_DONE` or `EVT`/`LANDED` ends the sequence normally.
 
 None of this depends on `TELEM`, which may be off entirely.
+
+### Transit altitude
+
+Two situations need one drone moved past a formation that is still flying: a
+**stray** — an aircraft the ground station has no phase relationship with — and a
+**joiner** catching up with a figure already in motion. Both are given a height one
+metre clear of the formation, chosen the same way:
+
+```
+transit = A - 1   if A - 1 >= 1.0     // under it where there is room
+          A + 1   otherwise           // no room under, go over
+```
+
+where `A` is the altitude the formation is flying. Under is preferred: it keeps the
+drone out of the airspace above everybody else, a failure there falls less far, and
+it stays clear of the 30 m ceiling.
+
+| formation | transit |                                    |
+| --------- | ------- | ---------------------------------- |
+| 1.5 m     | 2.5 m   | over — 0.5 m is too low to transit |
+| 2.0 m     | 1.0 m   | under                              |
+| 3.0 m     | 2.0 m   | under                              |
+
+**Stray:** `RTH` with `alt` = transit. The drone reaches that height in place, then
+returns, then lands. It has no phase relationship with the figure, so horizontal
+separation guarantees it nothing — the vertical split has to happen before it moves.
+
+**Joiner:** `START_DEMO` with `alt` = transit, then every `MOVE` carries the same
+`alt`. It walks the same vertex indices as the formation, one metre off, so it never
+depends on horizontal separation while it is out of phase. The formation does not
+stop for it.
+
+**Merging** a joiner is simply dropping `alt` from its next ordinary `MOVE`. No
+barrier and no pause: by then it is on the same vertex index as everyone, so it
+holds its anchor spacing for the whole leg and may descend while translating.
 
 Each drone runs its own sequence and is advanced independently.
 

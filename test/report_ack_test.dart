@@ -149,8 +149,12 @@ void main() {
     final figure = app.demo.progressFor(4)!.figure;
     expect(figure, isNotEmpty, reason: 'anchored');
 
-    // Airborne and holding over the anchor: the opening barrier.
+    // Airborne and holding over the anchor: the muster. Nothing steps until the
+    // operator releases the figure.
     await link.deliver(4, arrived(31, const LatLng(50.062975, 19.9157)));
+    await Future<void>.delayed(Duration.zero);
+    expect(app.demo.isMustering, isTrue);
+    expect(app.beginFormation(), isNull);
     await Future<void>.delayed(Duration.zero);
     expect(app.demo.progressFor(4)!.steps, 0);
 
@@ -172,13 +176,19 @@ void main() {
       () async {
     // Exactly what phone.log 2026-08-10 shows at 14:02:25: the Pi script was
     // restarted mid-session and q went 119 -> 1 while the app kept running.
-    await link.deliver(4, mine(118));
+    //
+    // The collision is the point, so q=1 has to have been used BEFORE the
+    // restart as well -- a low number we have simply never seen is not a
+    // duplicate under any implementation.
+    await link.deliver(4, mine(1));
     await link.deliver(4, mine(119, tag: 8, lat: 50.063975));
     expect(app.mines, hasLength(2));
 
+    // ... and now the same q=1, from a drone that has started counting again.
     await link.deliver(4, mine(1, tag: 9, lat: 50.064975));
 
     expect(app.mines, hasLength(3),
         reason: 'a restarted counter must not silence the drone that restarted');
+    expect(acksTo(4), hasLength(3), reason: 'and every one is still answered');
   });
 }

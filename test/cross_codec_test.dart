@@ -96,6 +96,19 @@ void main() {
     expect(bare.target.latitude, closeTo(50.063157, 1e-9));
   });
 
+  test('a per-hop altitude survives the crossing, and absence stays absent', () {
+    final withAlt = decode('move_with_alt') as MoveMessage;
+    expect(withAlt.altitude, 2.0);
+    expect(withAlt.target.latitude, closeTo(50.062975, 1e-9));
+
+    // Absent must decode as null, not 0: absent means "the demo's altitude", and
+    // 0 would be the ground.
+    expect((decode('move_no_alt') as MoveMessage).altitude, isNull);
+
+    expect((decode('rth_with_alt') as RthMessage).altitude, 2.5);
+    expect((decode('rth_no_alt') as RthMessage).altitude, isNull);
+  });
+
   test('re-encoding in Dart produces the same fields Python sent', () {
     for (final key in vectors.keys) {
       final original = jsonDecode(vectors[key] as String) as Map<String, Object?>;

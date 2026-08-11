@@ -30,7 +30,8 @@ const _timeout = Duration(milliseconds: 60);
 /// which is the whole point: only phase keeps these two drones apart.
 const _anchorA = LatLng(50.062975, 19.9157);
 final _anchorB = offsetLatLng(_anchorA, 90, 8.0);
-final _anchors = {1: _anchorA, 2: _anchorB};
+final _anchorC = offsetLatLng(_anchorA, 180, 8.0);
+final _anchors = {1: _anchorA, 2: _anchorB, 3: _anchorC, 4: _anchorC};
 
 ({CommandTracker tracker, DemoRunner runner}) build(
   FakeSender sender, {
@@ -153,6 +154,11 @@ Future<({CommandTracker tracker, DemoRunner runner})> launched(
   becomeAirborne(built.runner, 1);
   becomeAirborne(built.runner, 2);
   await pump();
+  // Both are up and holding over their anchors. Everything below this point is
+  // about flying the figure, so release it.
+  final refusal = built.runner.beginFormation();
+  expect(refusal, isNull, reason: 'the muster should be releasable');
+  await pump();
   return built;
 }
 
@@ -182,11 +188,58 @@ void main() {
         reason: 'landing a drone for being on the ground before takeoff aborts '
             'every demo before it begins');
 
-    // ... and it still runs normally once it is up.
+    // ... and it still runs normally once it is up and released.
     becomeAirborne(runner, 1);
+    await pump();
+    expect(runner.beginFormation(), isNull);
     await pump();
     expect(runner.progressFor(1)!.steps, 0);
     expect(sender.movesTo(1), hasLength(1));
+
+    runner.dispose();
+    tracker.dispose();
+  });
+
+  // ---- regression from phone.log 2026-08-10 18:48 --------------------------
+  // Drone 1 climbed in silence (the mission thread cannot report from inside
+  // arm()/take_off()), reported a good ARRIVED at 18:49:03.160, and was landed
+  // 0.3 s later for "no position for 12.752s". The opening arrival had moved it
+  // out of `starting`, so the pre-takeoff gap was judged against the airborne
+  // limit -- a drone destroyed by silence that happened before it was flying.
+  test('an arrival after a silent climb is not punished for the silence',
+      () async {
+    final sender = FakeSender();
+    final (:tracker, :runner) = build(sender,
+        drones: [1],
+        lockstep: false,           // telemetry load-bearing: the harsher case
+        clearanceMeters: 1.0,
+        telemetryTimeout: const Duration(milliseconds: 100),
+        groundTelemetryTimeout: const Duration(seconds: 30));
+
+    await runner.start([1], 3.0);
+    ackLast(tracker, sender, 1);
+    telem(runner, 1, DroneState.idle, _anchorA);
+    await pump();
+
+    // Arming and climbing, reporting nothing -- far longer than the airborne
+    // limit, well inside the ground one.
+    await settle(400);
+    expect(runner.progressFor(1)!.phase, DemoPhase.starting);
+
+    // Up, and says so.
+    arrive(runner, 1, _anchorA);
+    await pump();
+    expect(runner.progressFor(1)!.phase, DemoPhase.holding,
+        reason: 'up and holding over its anchor, waiting to be released');
+    expect(runner.beginFormation(), isNull);
+    await pump();
+    expect(runner.progressFor(1)!.phase, DemoPhase.stepping);
+
+    await settle(60);
+    expect(runner.progressFor(1)!.phase, isNot(DemoPhase.landing),
+        reason: 'silence from before takeoff must not be charged to the drone '
+            'the instant its arrival moves it into the airborne limit');
+    expect(sender.to(1).whereType<LandMessage>(), isEmpty);
 
     runner.dispose();
     tracker.dispose();
@@ -233,12 +286,20 @@ void main() {
       if (tracker.isAwaitingAck(1)) ackLast(tracker, sender, 1);
     });
     await settle(400);
+
+    // It has been holding over its anchor the whole time, which is the point of
+    // a muster: one drone that came up does not start the show on its own.
+    expect(sender.movesTo(1), isEmpty);
+    expect(runner.progressFor(1)!.phase, DemoPhase.holding);
+
+    // The operator sees three drones that never made it and goes anyway.
+    expect(runner.beginFormation(), isNull);
+    await settle(200);
     keepAlive.cancel();
 
     for (final id in [2, 3, 4]) {
       expect(runner.progressFor(id)!.phase, DemoPhase.stopped,
           reason: 'drone $id never flew, so there is nothing to land');
-      expect(runner.progressFor(id)!.detail, contains('never airborne'));
       expect(sender.to(id).whereType<LandMessage>(), isEmpty);
     }
 
@@ -270,6 +331,10 @@ void main() {
     expect(runner.progressFor(2)!.phase, DemoPhase.starting);
 
     becomeAirborne(runner, 2);
+    await pump();
+    expect(sender.movesTo(1), isEmpty,
+        reason: 'both are holding, but the operator has not released them');
+    expect(runner.beginFormation(), isNull);
     await pump();
 
     expect(sender.movesTo(1), hasLength(1));
@@ -362,9 +427,13 @@ void main() {
     tracker.dispose();
   });
 
-  test('a drone that goes silent is landed', () async {
+  test('off-step: a drone that goes silent is landed', () async {
     final sender = FakeSender();
+    // Off-step is where positions are load-bearing: ConflictMonitor predicts
+    // from them, so once they stop there is nothing keeping the drones apart.
     final (:tracker, :runner) = await launched(sender,
+        lockstep: false,
+        clearanceMeters: 1.0,
         telemetryTimeout: const Duration(milliseconds: 80));
     final figureA = runner.progressFor(1)!.figure;
 
@@ -381,9 +450,35 @@ void main() {
     tracker.dispose();
   });
 
-  test('a position that was already stale on arrival is not trusted', () async {
+  test('lockstep: a drone that goes silent is NOT landed', () async {
     final sender = FakeSender();
     final (:tracker, :runner) = await launched(sender,
+        telemetryTimeout: const Duration(milliseconds: 80));
+    final figureA = runner.progressFor(1)!.figure;
+
+    for (var i = 0; i < 4; i++) {
+      telem(runner, 1, DroneState.demo, figureA[0]);
+      await settle(30);
+    }
+
+    // In lockstep the guarantee is geometric and the vertex index comes from
+    // ARRIVED, so telemetry draws the map and nothing else. Landing a drone
+    // because the map went quiet destroys a flight to protect nothing -- and at
+    // 0.2 Hz every healthy drone is 'silent' against a 4 s limit.
+    expect(runner.progressFor(2)!.phase, isNot(DemoPhase.landing),
+        reason: 'silence is not evidence of anything the formation relies on');
+    expect(sender.to(2).whereType<LandMessage>(), isEmpty);
+
+    runner.dispose();
+    tracker.dispose();
+  });
+
+  test('off-step: a position that was already stale on arrival is not trusted',
+      () async {
+    final sender = FakeSender();
+    final (:tracker, :runner) = await launched(sender,
+        lockstep: false,
+        clearanceMeters: 1.0,
         telemetryTimeout: const Duration(milliseconds: 400));
     final figureA = runner.progressFor(1)!.figure;
     ackLast(tracker, sender, 1);        // keep the ACK watchdog out of this test
@@ -576,6 +671,11 @@ void main() {
         contains('somewhere it was not sent'));
     expect(sender.lastTo(2), isA<LandMessage>());
 
+    // Vertex 3 is neither the live step nor the one just credited, so the
+    // repeat-tolerance above must not swallow it.
+    expect(runner.progressFor(1)!.phase, isNot(DemoPhase.landing),
+        reason: 'and the healthy drone is untouched');
+
     runner.dispose();
     tracker.dispose();
   });
@@ -591,14 +691,17 @@ void main() {
     await pump();
     expect(runner.progressFor(1)!.steps, 1);
 
-    // The drone never got our ACK and says it again. AppState drops a repeat
-    // before it reaches here, but the barrier must not depend on that: acting on
-    // it would put the formation a vertex ahead of where anyone has flown.
+    // The drone never got our ACK and says it again. It is retried until
+    // acknowledged, so this is ordinary traffic: it must neither step the
+    // formation nor be mistaken for a drone that flew back to vertex 0.
     arrive(runner, 1, figureA[0]);
     await pump();
 
     expect(runner.progressFor(1)!.steps, 1, reason: 'still walking to vertex 1');
     expect(sender.movesTo(1), hasLength(2));
+    expect(runner.progressFor(1)!.phase, DemoPhase.stepping,
+        reason: 'a retransmission is not a reason to land a healthy drone');
+    expect(sender.to(1).whereType<LandMessage>(), isEmpty);
 
     runner.dispose();
     tracker.dispose();
@@ -621,6 +724,8 @@ void main() {
     // Opening barrier from ARRIVED at the anchor, no telemetry anywhere.
     arrive(runner, 1, _anchorA);
     arrive(runner, 2, _anchorB);
+    await pump();
+    expect(runner.beginFormation(), isNull);
     await pump();
 
     final figureA = runner.progressFor(1)!.figure;
@@ -656,6 +761,8 @@ void main() {
     ackLast(tracker, sender, 1);
     arrive(runner, 1, _anchorA);
     await pump();
+    expect(runner.beginFormation(), isNull);
+    await pump();
     expect(runner.progressFor(1)!.phase, DemoPhase.stepping);
 
     await settle(250);
@@ -670,27 +777,270 @@ void main() {
 
   // ---- the figure has to be measurable ------------------------------------
 
-  test('a figure whose vertices are closer than the arrival tolerance is refused',
+  // ---- mustering: getting a swarm airborne is not part of the choreography --
+
+  test('a drone still climbing is not treated as a straggler during a muster',
+      () async {
+    final sender = FakeSender();
+    final (:tracker, :runner) = build(sender,
+        barrierTimeout: const Duration(milliseconds: 80));
+    await runner.start([1, 2], 3.0);
+    ackLast(tracker, sender, 1);
+    ackLast(tracker, sender, 2);
+    await pump();
+
+    // Drone 1 is up and holding. Drone 2 is anchored but still climbing -- it
+    // has answered, so nothing is wrong with it; it just is not up yet.
+    becomeAirborne(runner, 1);
+    await pump();
+    expect(runner.progressFor(1)!.phase, DemoPhase.holding);
+    expect(runner.progressFor(2)!.phase, DemoPhase.starting);
+
+    // Several barrier timeouts' worth. The straggler rule lands every formation
+    // member that is not holding, so if it ran here the first drone to reach its
+    // anchor would start a countdown on every drone still in the air.
+    await settle(400);
+
+    expect(runner.progressFor(2)!.phase, DemoPhase.starting,
+        reason: 'arming and climbing is not being late for a barrier');
+    expect(sender.to(2).whereType<LandMessage>(), isEmpty);
+
+    runner.dispose();
+    tracker.dispose();
+  });
+
+  test('a drone whose START_DEMO was never answered can be re-added',
       () async {
     final sender = FakeSender();
     final (:tracker, :runner) = build(sender);
-    runner.radiusMeters = 2.0;      // the 2026-08-10 setting: 1.53 m edge
+    await runner.start([1, 2], 3.0);
+
+    // Drone 1 comes up. Drone 2's START_DEMO goes unanswered and it is dropped.
+    ackLast(tracker, sender, 1);
+    becomeAirborne(runner, 1);
+    final keepAlive = Timer.periodic(const Duration(milliseconds: 10), (_) {
+      if (tracker.isAwaitingAck(1)) ackLast(tracker, sender, 1);
+    });
+    await settle(400);
+    expect(runner.progressFor(2)!.isActive, isFalse);
+
+    // Re-adding must not disturb drone 1 -- start() would have erased it, and an
+    // erased drone is one flying with no watchdog and no way to be landed.
+    expect(await runner.addDrones([2]), isNull);
+    expect(runner.progressFor(1)!.phase, DemoPhase.holding,
+        reason: 'the drone already up is untouched');
+    expect(runner.progressFor(2)!.phase, DemoPhase.starting);
+    expect(sender.to(2).whereType<StartDemoMessage>().length,
+        greaterThanOrEqualTo(2), reason: 'it was asked again');
+
+    ackLast(tracker, sender, 2);
+    becomeAirborne(runner, 2);
+    await pump();
+    expect(runner.mustered, hasLength(2));
+    keepAlive.cancel();
+
+    runner.dispose();
+    tracker.dispose();
+  });
+
+  test('a drone joins a moving figure a metre off it, without stopping it',
+      () async {
+    final sender = FakeSender();
+    final (:tracker, :runner) = await launched(sender);
+    final figureA = runner.progressFor(1)!.figure;
+    final figureB = runner.progressFor(2)!.figure;
+
+    // Formation at 3 m, so a joiner transits under it at 2 m.
+    expect(runner.transitAltitude, 2.0);
+    expect(await runner.addDrones([3]), isNull);
+    expect(runner.altitudeOverrideFor(3), 2.0);
+    expect(
+        sender.to(3).whereType<StartDemoMessage>().single.altitude, 2.0,
+        reason: 'it climbs straight to the offset height');
+
+    // Drone 3 is still arming. The figure must NOT wait for it -- that is the
+    // whole reason for the offset.
+    final movesBefore = sender.movesTo(1).length;
+    flyTo(runner, 1, figureA[0]);
+    flyTo(runner, 2, figureB[0]);
+    await pump();
+    expect(sender.movesTo(1).length, movesBefore + 1,
+        reason: 'the formation stepped while the joiner was still climbing');
+    expect(runner.progressFor(3)!.phase, DemoPhase.starting);
+
+    // Up. From the next barrier it walks the same vertex indices, one metre off.
+    ackLast(tracker, sender, 3, position: _anchorC);
+    arrive(runner, 3, _anchorC);
+    await pump();
+    ackLast(tracker, sender, 1);
+    ackLast(tracker, sender, 2);
+    final figureC = runner.progressFor(3)!.figure;
+    flyTo(runner, 1, figureA[1]);
+    flyTo(runner, 2, figureB[1]);
+    await pump();
+    expect(sender.movesTo(3), isNotEmpty);
+    expect(sender.movesTo(3).last.altitude, 2.0,
+        reason: 'every step it takes stays off the formation altitude');
+
+    // Merging is just dropping the field: no barrier, no pause.
+    expect(runner.mergeIntoFormation(3), isNull);
+    expect(runner.altitudeOverrideFor(3), isNull);
+    flyTo(runner, 3, figureC[runner.progressFor(3)!.steps % 8]);
+    flyTo(runner, 1, figureA[2]);
+    flyTo(runner, 2, figureB[2]);
+    await pump();
+    expect(sender.movesTo(3).last.altitude, isNull,
+        reason: 'back on the formation altitude from its next ordinary step');
+
+    runner.dispose();
+    tracker.dispose();
+  });
+
+  test('transit altitude goes under the formation, or over it when too low',
+      () async {
+    final sender = FakeSender();
+    final (:tracker, :runner) = build(sender, drones: [1]);
+
+    for (final (formation, expected, why) in [
+      (1.5, 2.5, 'over: 0.5 m would be too low to transit'),
+      (1.8, 2.8, 'over: still no metre of room underneath'),
+      (2.0, 1.0, 'under: exactly a metre of room'),
+      (3.0, 2.0, 'under'),
+    ]) {
+      await runner.start([1], formation);
+      expect(runner.transitAltitude, closeTo(expected, 1e-9), reason: why);
+    }
+
+    runner.dispose();
+    tracker.dispose();
+  });
+
+  test('a stray near a moving figure is sent home clear of it', () async {
+    final sender = FakeSender();
+    final (:tracker, :runner) = await launched(sender);
+
+    // An aircraft the app has no phase relationship with, announcing itself
+    // airborne. Letting it hover until its own idle timeout leaves something
+    // unmanaged at the formation's altitude for half a minute.
+    arrive(runner, 4, _anchorC);
+    await pump();
+
+    final rth = sender.to(4).whereType<RthMessage>();
+    expect(rth, hasLength(1));
+    expect(rth.single.altitude, 2.0,
+        reason: 'clear of the 3 m the formation is using');
+    expect(runner.progressFor(4), isNull, reason: 'it is not in the formation');
+
+    // ARRIVED is retried until acknowledged, so repeats must not fire again.
+    arrive(runner, 4, _anchorC);
+    arrive(runner, 4, _anchorC);
+    await pump();
+    expect(sender.to(4).whereType<RthMessage>(), hasLength(1));
+
+    runner.dispose();
+    tracker.dispose();
+  });
+
+  test('a drone the app gave up on is adopted from its own arrival report',
+      () async {
+    final sender = FakeSender();
+    final (:tracker, :runner) = build(sender);
+    await runner.start([1, 2], 3.0);
+    ackLast(tracker, sender, 1);
+    becomeAirborne(runner, 1);
+
+    final keepAlive = Timer.periodic(const Duration(milliseconds: 10), (_) {
+      if (tracker.isAwaitingAck(1)) ackLast(tracker, sender, 1);
+    });
+    await settle(400);
+    expect(runner.progressFor(2)!.isActive, isFalse,
+        reason: 'its START_DEMO ACK never arrived');
+
+    // ... but the drone did get the command, climbed, and says so. The opening
+    // report's `to` IS its anchor, so nothing is lost with the missing ACK.
+    // phone.log 2026-08-10 18:50 and 18:48 are both exactly this.
+    arrive(runner, 2, _anchorB);
+    await pump();
+    keepAlive.cancel();
+
+    expect(runner.progressFor(2)!.isActive, isTrue, reason: 'adopted');
+    expect(runner.progressFor(2)!.figure, hasLength(8));
+    expect(runner.mustered, containsAll([1, 2]));
+
+    runner.dispose();
+    tracker.dispose();
+  });
+
+  test('mustering drones are kept alive so they do not time out', () async {
+    final sender = FakeSender();
+    final (:tracker, :runner) = build(sender, drones: [1]);
+    await runner.start([1], 3.0);
+    ackLast(tracker, sender, 1);
+    becomeAirborne(runner, 1);
+    await pump();
+
+    // The drone lands itself after 30 s without contact. A muster can easily
+    // last longer than that, so something has to keep talking to it.
+    await settle(300);
+    expect(sender.to(1).whereType<StatusMessage>(), isNotEmpty,
+        reason: 'a hovering drone with nothing to do must still hear from us');
+
+    runner.dispose();
+    tracker.dispose();
+  });
+
+  // ---- the geometry that actually keeps drones apart ----------------------
+
+  test('a formation whose anchors are too close together is not released',
+      () async {
+    final sender = FakeSender();
+    final (:tracker, :runner) = build(sender);
+    await runner.start([1, 2], 3.0);
+
+    // Took off 3 m apart. With 2 m of position tolerance each they could close
+    // to -1 m, so there is no figure and no vertex count that makes this safe --
+    // and equally, none that makes it unsafe once they are far enough apart.
+    const tight = LatLng(50.062975, 19.9157);
+    ackLast(tracker, sender, 1, position: tight);
+    ackLast(tracker, sender, 2, position: offsetLatLng(tight, 90, 3.0));
+    await pump();
+    arrive(runner, 1, tight);
+    arrive(runner, 2, offsetLatLng(tight, 90, 3.0));
+    await pump();
+
+    expect(runner.mustered, hasLength(2), reason: 'both are up and holding');
+    expect(runner.separationFault, contains('could close to'));
+
+    final refusal = runner.beginFormation();
+    expect(refusal, isNotNull);
+    expect(runner.isFlying, isFalse);
+    expect(sender.movesTo(1), isEmpty, reason: 'nobody was sent anywhere');
+
+    runner.dispose();
+    tracker.dispose();
+  });
+
+  test('a tight figure is fine as long as the anchors are far enough apart',
+      () async {
+    final sender = FakeSender();
+    final (:tracker, :runner) = build(sender);
+    // The figure the old guard would have refused: 8 vertices at 2 m, a 1.53 m
+    // edge. Irrelevant in lockstep -- translated copies cancel out.
+    runner.radiusMeters = 2.0;
     runner.vertexCount = 8;
-
-    expect(runner.figureFault, isNotNull);
-    expect(runner.figureFault, contains('arrival tolerance'));
-
     await runner.start([1, 2], 3.0);
+    ackLast(tracker, sender, 1);
+    ackLast(tracker, sender, 2);
+    await pump();
+    becomeAirborne(runner, 1);
+    becomeAirborne(runner, 2);
+    await pump();
 
-    expect(runner.isRunning, isFalse);
-    expect(sender.sent, isEmpty,
-        reason: 'nothing may reach a drone for a figure we cannot check');
-
-    // Opened up, the same figure is fine.
-    runner.radiusMeters = 5.0;
-    expect(runner.figureFault, isNull);
-    await runner.start([1, 2], 3.0);
-    expect(runner.isRunning, isTrue);
+    expect(runner.separationFault, isNull,
+        reason: 'anchors are 8 m apart; the figure size cancels out');
+    expect(runner.beginFormation(), isNull);
+    await pump();
+    expect(sender.movesTo(1), hasLength(1));
 
     runner.dispose();
     tracker.dispose();
@@ -914,6 +1264,8 @@ void main() {
     ackLast(built.tracker, sender, 2);
     becomeAirborne(runner, 1);
     becomeAirborne(runner, 2);
+    await pump();
+    expect(runner.beginFormation(), isNull);
     await pump();
 
     for (var step = 0; step < 3; step++) {

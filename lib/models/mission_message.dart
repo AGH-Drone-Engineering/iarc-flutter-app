@@ -194,9 +194,13 @@ sealed class MissionMessage {
           corners: _corners(parsed),
           altitude: _double(parsed, 'alt'),
         ),
-      'MOVE' => MoveMessage(seq: seq, target: _latLonPair(parsed, 'to')),
+      'MOVE' => MoveMessage(
+          seq: seq,
+          target: _latLonPair(parsed, 'to'),
+          altitude: _optionalDouble(parsed, 'alt'),
+        ),
       'LAND' => LandMessage(seq: seq),
-      'RTH' => RthMessage(seq: seq),
+      'RTH' => RthMessage(seq: seq, altitude: _optionalDouble(parsed, 'alt')),
       'STATUS' => StatusMessage(seq: seq),
       _ => throw UnsupportedMessageTypeException(type, seq),
     };
@@ -254,7 +258,16 @@ class MoveMessage extends MissionMessage {
   /// cannot drift and both ends agree without sharing an origin.
   final LatLng target;
 
-  const MoveMessage({required super.seq, required this.target});
+  /// Height for this hop, or null to fly it at the demo's altitude.
+  ///
+  /// Set only for a drone deliberately being flown off the rest -- a late joiner
+  /// walking the same vertex indices a metre away vertically. Dropping the field
+  /// again on a later step is how it merges back in: it is on the same vertex
+  /// index at both ends of that leg, so it stays its anchor spacing from
+  /// everybody throughout and may change height while translating.
+  final double? altitude;
+
+  const MoveMessage({required super.seq, required this.target, this.altitude});
 
   @override
   String get type => 'MOVE';
@@ -263,6 +276,7 @@ class MoveMessage extends MissionMessage {
   @override
   Map<String, Object?> get fields => {
         'to': [_round(target.latitude, 7), _round(target.longitude, 7)],
+        if (altitude != null) 'alt': _round(altitude!, 2),
       };
 }
 
@@ -277,13 +291,24 @@ class LandMessage extends MissionMessage {
 }
 
 class RthMessage extends MissionMessage {
-  const RthMessage({required super.seq});
+  /// Height to return at, or null for the drone's own assigned RTH altitude.
+  ///
+  /// Given when the return has to avoid a formation that is still flying: the
+  /// drone reaches this height *in place* before it translates, so it leaves the
+  /// altitude the others are using before it crosses their circles. Without that
+  /// ordering an RTH is a diagonal straight through them, which is why aborts
+  /// used to be `LAND` and never this.
+  final double? altitude;
+
+  const RthMessage({required super.seq, this.altitude});
   @override
   String get type => 'RTH';
   @override
   bool get expectsAck => true;
   @override
-  Map<String, Object?> get fields => const {};
+  Map<String, Object?> get fields => {
+        if (altitude != null) 'alt': _round(altitude!, 2),
+      };
 }
 
 class StatusMessage extends MissionMessage {

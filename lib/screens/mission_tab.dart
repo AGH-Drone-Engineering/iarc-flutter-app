@@ -380,43 +380,54 @@ class _MissionStartSection extends StatelessWidget {
             ),
           ],
           const SizedBox(height: 8),
-          if (app.demo.isRunning)
+          if (app.demo.isRunning) ...[
+            _MusterRoster(app: app),
+            const SizedBox(height: 8),
+            if (app.demo.isMustering)
+              Builder(builder: (context) {
+                final fault = app.demo.separationFault;
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    if (fault != null)
+                      _Warning(text: fault),
+                    FilledButton.icon(
+                      onPressed: app.demo.mustered.isEmpty || fault != null
+                          ? null
+                          : () {
+                              final refusal = app.beginFormation();
+                              if (refusal != null && context.mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(content: Text(refusal)));
+                              }
+                            },
+                      icon: const Icon(Icons.play_arrow),
+                      label: Text('BEGIN FORMATION '
+                          '(${app.demo.mustered.length} ready)'),
+                      style: FilledButton.styleFrom(
+                        minimumSize: const Size.fromHeight(48),
+                      ),
+                    ),
+                  ],
+                );
+              }),
+            const SizedBox(height: 8),
             FilledButton.icon(
               onPressed: app.stopDemo,
               icon: const Icon(Icons.stop),
-              label: const Text('STOP DEMO'),
+              label: Text(app.demo.isMustering ? 'CANCEL' : 'STOP DEMO'),
               style: FilledButton.styleFrom(
                 minimumSize: const Size.fromHeight(48),
                 backgroundColor: Theme.of(context).colorScheme.tertiary,
               ),
-            )
-          else ...[
-            if (app.demo.figureFault != null)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 8),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Icon(Icons.error_outline,
-                        size: 18, color: Theme.of(context).colorScheme.error),
-                    const SizedBox(width: 6),
-                    Expanded(
-                      child: Text(
-                        app.demo.figureFault!,
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                              color: Theme.of(context).colorScheme.error,
-                            ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
+            ),
+          ] else ...[
+            _RosterPicker(app: app),
+            const SizedBox(height: 8),
             FilledButton.icon(
-              onPressed: enabled && app.demo.figureFault == null
-                  ? () => app.startDemo()
-                  : null,
+              onPressed: enabled ? () => app.startDemo() : null,
               icon: const Icon(Icons.flight_takeoff),
-              label: const Text('START DEMO'),
+              label: const Text('MUSTER DRONES'),
               style: FilledButton.styleFrom(
                 minimumSize: const Size.fromHeight(48),
               ),
@@ -551,6 +562,154 @@ class _MineStrip extends StatelessWidget {
           runSpacing: 6,
           children: [for (final m in app.mines) MineIdentity(mine: m)],
         ),
+      ),
+    );
+  }
+}
+
+/// Which drones a demo is for, chosen before mustering.
+///
+/// An arbitrary subset, not "one or all": which airframes are on the field
+/// changes between tests, and addressing drones that are switched off spends
+/// uplink airtime on frames that can never be answered.
+class _RosterPicker extends StatelessWidget {
+  const _RosterPicker({required this.app});
+
+  final AppState app;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('Drones in this demo',
+            style: Theme.of(context).textTheme.labelSmall),
+        const SizedBox(height: 6),
+        Wrap(
+          spacing: 6,
+          runSpacing: 6,
+          children: [
+            for (final d in app.drones)
+              FilterChip(
+                label: Text(d.name),
+                selected: app.demoRoster.contains(d.id),
+                showCheckmark: false,
+                avatar: DroneBadge(color: d.color, radius: 5),
+                onSelected: (_) => app.toggleDemoRoster(d.id),
+              ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+/// Per-drone state during a muster, with a retry for whoever did not come up.
+class _MusterRoster extends StatelessWidget {
+  const _MusterRoster({required this.app});
+
+  final AppState app;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final entries = app.demo.progress.entries.toList()
+      ..sort((a, b) => a.key.compareTo(b.key));
+    if (entries.isEmpty) return const SizedBox.shrink();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(app.demo.isMustering ? 'Mustering' : 'Flying the figure',
+            style: Theme.of(context).textTheme.labelSmall),
+        const SizedBox(height: 4),
+        for (final e in entries)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 2),
+            child: Row(
+              children: [
+                Icon(
+                  switch (e.value.phase) {
+                    DemoPhase.holding => Icons.check_circle,
+                    DemoPhase.starting => Icons.flight_takeoff,
+                    DemoPhase.stepping => Icons.navigation,
+                    DemoPhase.landing => Icons.flight_land,
+                    DemoPhase.finished => Icons.done_all,
+                    DemoPhase.stopped => Icons.cancel,
+                  },
+                  size: 16,
+                  color: switch (e.value.phase) {
+                    DemoPhase.holding => scheme.primary,
+                    DemoPhase.landing || DemoPhase.stopped => scheme.error,
+                    _ => scheme.onSurfaceVariant,
+                  },
+                ),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    () {
+                      final off = app.demo.altitudeOverrideFor(e.key);
+                      final base =
+                          '${Drone.nameFor(e.key)} — ${e.value.detail ?? e.value.phase.name}';
+                      return off == null
+                          ? base
+                          : '$base · joining at ${off.toStringAsFixed(1)}m';
+                    }(),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ),
+                // Only once it is actually walking the figure: merging a drone
+                // that is still climbing would drop its offset before it has a
+                // vertex to hold.
+                if (app.demo.altitudeOverrideFor(e.key) != null &&
+                    e.value.phase != DemoPhase.starting)
+                  TextButton(
+                    onPressed: () => app.mergeIntoFormation(e.key),
+                    child: const Text('MERGE'),
+                  ),
+                // Only offer a retry for a drone that never got up, and only
+                // while mustering -- adding one to a moving figure would put it
+                // a vertex out of phase with everybody else.
+                if (!e.value.isActive)
+                  TextButton(
+                    onPressed: () => app.retryStart(e.key),
+                    child: Text(app.demo.isMustering ? 'RETRY' : 'JOIN'),
+                  ),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _Warning extends StatelessWidget {
+  const _Warning({required this.text});
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(Icons.error_outline, size: 18, color: scheme.error),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              text,
+              style: Theme.of(context)
+                  .textTheme
+                  .bodySmall
+                  ?.copyWith(color: scheme.error),
+            ),
+          ),
+        ],
       ),
     );
   }

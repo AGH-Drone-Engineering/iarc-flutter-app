@@ -140,6 +140,21 @@ class CommandTracker extends ChangeNotifier {
     return seq;
   }
 
+  /// Sends one message and forgets it: no retries, no failure if it is lost.
+  ///
+  /// For traffic whose whole purpose is to be sent rather than to be obeyed --
+  /// the keepalive that stops a hovering drone timing out. Tracking it would be
+  /// wrong twice over: a lost keepalive is not a drone fault, and recording it
+  /// as one would raise a failure banner over a perfectly healthy aircraft. The
+  /// next one is along in a few seconds anyway, which is a better retry than the
+  /// tracker's.
+  ///
+  /// Still takes a `q` from the shared counter, so every phone→drone message has
+  /// a distinct one (PROTOCOL.md §3).
+  Future<void> ping(int dest, MissionMessage Function(int seq) build) async {
+    await _send(dest, build(_seq.take()));
+  }
+
   /// Stops chasing an ACK for [seq]: no more retries, and no failure reported.
   ///
   /// For a command the drone can still usefully act on, letting the retries run
