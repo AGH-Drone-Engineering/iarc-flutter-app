@@ -457,11 +457,16 @@ void main() {
         velocity: (north: 0.0, east: 0.0));
     await pump();
 
-    expect(runner.progressFor(2)!.phase, DemoPhase.holding);
-    expect(runner.progressFor(2)!.detail, contains('ARRIVED never reached us'));
+    // Crediting the step satisfies the barrier, so the formation releases and
+    // both drones are already on their way to vertex 1 -- which is the point:
+    // the run continued instead of losing a drone that was exactly where it
+    // was supposed to be.
+    expect(runner.progressFor(2)!.steps, 1,
+        reason: 'drone 2 can only have advanced by having its arrival credited');
     expect(runner.progressFor(1)!.steps, 1, reason: 'the formation steps on');
-    expect(runner.progressFor(2)!.steps, 1);
+    expect(runner.progressFor(2)!.phase, DemoPhase.stepping);
     expect(sender.to(2).whereType<LandMessage>(), isEmpty);
+    expect(sender.movesTo(2), hasLength(2));
 
     runner.dispose();
     tracker.dispose();
