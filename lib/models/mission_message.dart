@@ -202,6 +202,13 @@ sealed class MissionMessage {
       'LAND' => LandMessage(seq: seq),
       'RTH' => RthMessage(seq: seq, altitude: _optionalDouble(parsed, 'alt')),
       'STATUS' => StatusMessage(seq: seq),
+      'PING' => PingMessage(seq: seq, n: _int(parsed, 'n')),
+      'PONG' => PongMessage(
+          seq: seq,
+          rx: _int(parsed, 'rx'),
+          tx: _int(parsed, 'tx'),
+          last: _int(parsed, 'last'),
+        ),
       _ => throw UnsupportedMessageTypeException(type, seq),
     };
   }
@@ -523,6 +530,54 @@ class ArrivedMessage extends MissionMessage {
         'at': [_round(at.latitude, 7), _round(at.longitude, 7)],
         if (speed != null) 'spd': _round(speed!, 2),
       };
+}
+
+/// A numbered frame nobody answers, for measuring the radio itself.
+///
+/// [expectsAck] is false and the drone must not reply to it. That is the whole
+/// design: loss on this link was being inferred from missing ACKs, and an ACK
+/// cannot tell "the frame never arrived" from "the frame arrived and its answer
+/// was lost" -- while costing a transmission of its own, so asking the question
+/// changes the answer.
+///
+/// [n] counts pings independently of [seq]: the envelope sequence wraps and is
+/// shared with every other message the app sends, whereas a gap in [n] is
+/// exactly one lost ping.
+class PingMessage extends MissionMessage {
+  final int n;
+  const PingMessage({required super.seq, required this.n});
+
+  @override
+  String get type => 'PING';
+  @override
+  bool get expectsAck => false;
+  @override
+  Map<String, Object?> get fields => {'n': n};
+}
+
+/// The drone's tally, sent on a timer and acknowledged by nobody.
+///
+/// [rx] PINGs seen, [tx] PONGs sent, [last] the newest ping number. Those three
+/// against what the app counted separate the two directions, which is what a
+/// missing ACK can never do:
+///
+///     uplink loss   = 1 - rx / pingsSent
+///     downlink loss = 1 - pongsReceived / tx
+class PongMessage extends MissionMessage {
+  final int rx;
+  final int tx;
+  final int last;
+  const PongMessage({
+    required super.seq,
+    required this.rx,
+    required this.tx,
+    required this.last,
+  });
+
+  @override
+  String get type => 'PONG';
+  @override
+  Map<String, Object?> get fields => {'rx': rx, 'tx': tx, 'last': last};
 }
 
 class _Decimal {

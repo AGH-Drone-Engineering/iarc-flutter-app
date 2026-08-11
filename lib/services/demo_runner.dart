@@ -102,6 +102,8 @@ class DemoRunner extends ChangeNotifier {
     double clearanceMeters = 4.0,
     this.settleDelay = Duration.zero,
     this.barrierTimeout = const Duration(seconds: 6),
+    this.stragglerProbeInterval = const Duration(seconds: 4),
+    this.stationarySpeedMeters = 0.6,
     this.telemetryTimeout = const Duration(seconds: 4),
     this.groundTelemetryTimeout = const Duration(seconds: 40),
     this.legTimeout = const Duration(seconds: 30),
@@ -157,10 +159,40 @@ class DemoRunner extends ChangeNotifier {
   /// changes nothing about what keeps the drones apart.
   Duration settleDelay;
 
-  /// How long the drones already at a vertex will wait for the stragglers.
-  /// Whoever has not arrived by then is landed. [settleDelay] is added on top
-  /// off-step, where the same clock is what limits a drone held by traffic.
+  /// How long a drone may be overdue at its vertex before we go and ask it.
+  ///
+  /// In lockstep this is a *probe* trigger, not a sentence. It used to land
+  /// whoever had not reported arriving within this long of the first drone
+  /// getting there, which made a lost `ARRIVED` indistinguishable from a drone
+  /// that never arrived -- and on a link losing a third of its frames those are
+  /// wildly different likelihoods. The drone's own retry schedule is
+  /// `UPLINK_RETRY_BASE = 2.5` doubling (`comms/link.py`), so attempts land at
+  /// t=0, 2.5, 7.5, 17.5 s: a six second window admits two of them, and both
+  /// being lost at 35% is a 12% event *per barrier*. Over a six-vertex lap that
+  /// is better than even odds of a healthy drone being landed for arriving.
+  ///
+  /// So the timeout now starts a conversation instead: see [_probeStraggler].
+  /// What still lands a drone that has genuinely stopped flying is [legTimeout],
+  /// which measures the thing that actually has to happen, and an unanswered
+  /// `STATUS`, which is evidence rather than absence of it.
+  ///
+  /// Off-step it keeps its old meaning -- there it is the clock on a drone held
+  /// back by traffic, with [settleDelay] added on top.
   final Duration barrierTimeout;
+
+  /// How often an overdue drone is asked where it is, while it stays overdue.
+  ///
+  /// Slower than the watchdog on purpose. Each probe is a tracked frame with its
+  /// own retries, and the point is to resolve an ambiguity rather than to shout
+  /// at a link that is already dropping frames.
+  final Duration stragglerProbeInterval;
+
+  /// Ground speed below which a drone counts as standing still, in m/s.
+  ///
+  /// Only used when a position has to stand in for a missing arrival report:
+  /// `ARRIVED` asserts "reached it *and* stopped", so a position alone must
+  /// carry the same two claims or it is not the same evidence.
+  final double stationarySpeedMeters;
 
   /// A position this old is not evidence of anything. Airborne telemetry is
   /// 1 Hz by default, so this is several missed frames, not a hair trigger.
@@ -228,9 +260,12 @@ class DemoRunner extends ChangeNotifier {
   /// cannot be landed, and must not drag the others down when we try.
   final Set<int> _everAirborne = {};
 
+  /// When each overdue drone was last asked where it is, for
+  /// [stragglerProbeInterval].
+  final Map<int, DateTime> _lastProbe = {};
+
   Timer? _watchdog;
   Timer? _settleTimer;
-  DateTime? _barrierSince;
   bool _escalating = false;
 
   /// False while the drones are being gathered, true once the operator has
@@ -322,6 +357,11 @@ class DemoRunner extends ChangeNotifier {
 
   /// Strays already sent home, so a retried `ARRIVED` does not re-send `RTH`.
   final Set<int> _sentHome = {};
+
+  /// Drones we have commanded down in this run. They are not candidates for
+  /// adoption until they have landed and been started fresh: a `LAND` in flight
+  /// and an `ARRIVED` from before it can easily cross on a lossy link.
+  final Set<int> _landCommanded = {};
   int? _lockedVertexCount;
   double? _lockedRadius;
   bool _lockedLockstep = true;
@@ -449,15 +489,16 @@ class DemoRunner extends ChangeNotifier {
     _heldSince.clear();
     _pendingMove.clear();
     _steppingSince.clear();
+    _lastProbe.clear();
     _everAirborne.clear();
     _clock.clear();
     _conflicts.clear();
-    _barrierSince = null;
     _escalating = false;
     _flying = false;
     _lastKeepalive = null;
     _altitudeOverride.clear();
     _sentHome.clear();
+    _landCommanded.clear();
     _lockedVertexCount = vertexCount;
     _lockedRadius = radiusMeters;
     _lockedLockstep = lockstep;
@@ -508,16 +549,22 @@ class DemoRunner extends ChangeNotifier {
     final joining = _flying;
     final altitude = joining ? transitAltitude : _altitude;
 
-    final fresh = drones.where((id) {
-      final p = _progress[id];
-      return p == null || !p.isActive;
-    }).toList();
-    if (fresh.isEmpty) return 'those drones are already in the muster';
+    // Already in the run, in any active phase, means there is nothing to start.
+    // A second START_DEMO to a flying drone can only come back BUSY, and every
+    // one of those is a chance to mistake agreement for failure.
+    final already = drones.where((id) => _progress[id]?.isActive ?? false).toList();
+    final fresh = drones.where((id) => !(_progress[id]?.isActive ?? false)).toList();
+    if (already.isNotEmpty) {
+      logInfo('Drone(s) ${already.join(", ")} are already in this run - not '
+          'starting them again', _tag);
+    }
+    if (fresh.isEmpty) return 'those drones are already in the run';
 
     for (final id in fresh) {
       _progress[id] = DemoProgress(droneId: id, phase: DemoPhase.starting);
       if (joining) _altitudeOverride[id] = altitude;
       _sentHome.remove(id);
+      _landCommanded.remove(id);
     }
     logInfo(
         joining
@@ -594,12 +641,14 @@ class DemoRunner extends ChangeNotifier {
     _heldSince.clear();
     _pendingMove.clear();
     _steppingSince.clear();
+    _lastProbe.clear();
     _clock.clear();
     _conflicts.clear();
     _flying = false;
     _lastKeepalive = null;
     _altitudeOverride.clear();
     _sentHome.clear();
+    _landCommanded.clear();
     _watchdog?.cancel();
     _watchdog = null;
     _settleTimer?.cancel();
@@ -662,6 +711,15 @@ class DemoRunner extends ChangeNotifier {
       return;
     }
 
+    // The arrival report is overdue and this position says the drone is parked
+    // on the vertex anyway: the step happened and only the report was lost.
+    // Gated on being overdue, so ordinary stepping still moves on ARRIVED alone.
+    if (_lockedLockstep &&
+        p.phase == DemoPhase.stepping &&
+        _confirmArrivalFromPosition(droneId, p, telemetry)) {
+      return;
+    }
+
     // Corroboration only: the formation steps on ARRIVED, never on this. A
     // HOVER edge is not evidence of arrival -- the drone reports HOVER the
     // instant its goto returns, which on a tight figure can be centimetres into
@@ -702,6 +760,18 @@ class DemoRunner extends ChangeNotifier {
     if (p == null || !p.isActive || p.figure.isEmpty) {
       if (!isRunning || _flying) {
         _sendStrayHome(droneId);
+        return;
+      }
+      // Not if we have already told it to come down. On 2026-08-10 the app gave
+      // up on node 1, sent LAND, and then adopted it back into the muster ten
+      // seconds later off the arrival report it made while still climbing -- and
+      // landed it again immediately for "reported LANDING mid-formation". It was
+      // being punished for obeying. A drone we have sent down has to finish
+      // coming down and be started again from scratch.
+      if (_landCommanded.contains(droneId)) {
+        logWarn('Drone $droneId reports it is airborne, but we have already sent '
+            'it LAND - not adopting. Start it again once it is on the ground.',
+            _tag);
         return;
       }
       final anchor = arrived.target;
@@ -790,13 +860,114 @@ class DemoRunner extends ChangeNotifier {
     }
   }
 
+  /// A drone is overdue at its vertex. Ask it where it is instead of landing it.
+  ///
+  /// Silence on the `ARRIVED` path proves nothing on its own -- that report is
+  /// the drone's to retransmit, and at the loss rates measured on 2026-08-10 two
+  /// consecutive attempts vanishing is an ordinary event. `STATUS` is the
+  /// opposite kind of question: it goes through [CommandTracker], so it is
+  /// acknowledged and retried, and the drone answers it with an ACK *and* a fresh
+  /// `TELEM` -- one frame that says both "I am still here" and "here is where".
+  ///
+  /// Three things can happen, and all three are informative where waiting was
+  /// not. The `TELEM` shows it standing on the vertex, so the arrival happened
+  /// and only the report was lost ([_confirmArrivalFromPosition]). It shows the
+  /// drone still under way, so it is genuinely slow and [legTimeout] owns it.
+  /// Or nothing comes back at all after every retry, which is real evidence of a
+  /// drone that cannot be reached -- see [_onFailed].
+  void _probeStraggler(int droneId, DemoProgress p, DateTime now) {
+    final last = _lastProbe[droneId];
+    if (last != null && now.difference(last) < stragglerProbeInterval) return;
+    _lastProbe[droneId] = now;
+
+    final vertex = p.figure.isEmpty ? 0 : p.steps % p.figure.length;
+    final waited = now.difference(_steppingSince[droneId]!);
+    logWarn('Drone $droneId has not reported reaching vertex $vertex in '
+        '${waited.inMilliseconds / 1000}s - asking it directly (STATUS) rather '
+        'than assuming it never got there', _tag);
+    unawaited(_tracker.send((q) => StatusMessage(seq: q), dest: droneId));
+  }
+
+  /// Credit an overdue arrival from a fresh position, when a position can carry
+  /// that weight.
+  ///
+  /// Deliberately *not* part of ordinary stepping -- the formation still moves on
+  /// `ARRIVED` and nothing else. A drone reports `HOVER` the instant its goto
+  /// returns, which on a tight figure can be centimetres into the leg, so a
+  /// position that merely looks right is not an arrival. This is a repair path,
+  /// gated on the report already being overdue.
+  ///
+  /// To stand in for `ARRIVED` a position has to make all the same claims:
+  ///
+  /// 1. **On the vertex** -- within [arrivalToleranceMeters] of the target, the
+  ///    same test [handleArrived] applies to `ARRIVED.at`.
+  /// 2. **Stopped** -- `ARRIVED` means reached *and* standing still, and the
+  ///    formation's geometry depends on the second half as much as the first.
+  ///    Taken from the drone's own EKF velocity, not inferred from position
+  ///    differences, which read zero exactly when two fixes land on one spot.
+  /// 3. **Nearer the vertex than the one it set out from** -- the part `ARRIVED`
+  ///    gets for free, by echoing the `MOVE`'s `to`.
+  ///
+  ///    A position cannot name a vertex: on any figure tight enough to be worth
+  ///    flying, neighbouring vertices sit inside [arrivalToleranceMeters] of one
+  ///    another (eight vertices at 5 m are 3.83 m apart against a 2 m tolerance),
+  ///    so "within tolerance of vertex k" does not even imply "not also within
+  ///    tolerance of k-1". But naming it is not what this needs. There are only
+  ///    two hypotheses -- still back at the vertex the leg started from, or
+  ///    arrived at the one it was sent to -- because we never commanded anywhere
+  ///    else. Two hypotheses are told apart by which is closer, and that stays
+  ///    decidable however tight the figure gets.
+  bool _confirmArrivalFromPosition(int droneId, DemoProgress p, TelemMessage t) {
+    final left = _steppingSince[droneId];
+    if (left == null || DateTime.now().difference(left) <= barrierTimeout) {
+      return false;
+    }
+    final target = p.targetIn(p.figure);
+    if (target == null) return false;
+    final vertex = p.steps % p.figure.length;
+
+    final off = _distance(t.position, target);
+    if (off > arrivalToleranceMeters) return false;
+
+    final speed = t.groundSpeed;
+    if (speed == null) {
+      logTrace(_tag, 'drone $droneId looks parked on vertex $vertex but reported '
+          'no velocity - cannot tell standing still from passing through');
+      return false;
+    }
+    if (speed > stationarySpeedMeters) return false;
+
+    final from = _legOrigin(p);
+    final back = _distance(t.position, from);
+    if (back <= off) {
+      logTrace(_tag, 'drone $droneId is ${off.toStringAsFixed(1)}m from vertex '
+          '$vertex but ${back.toStringAsFixed(1)}m from where the leg started - '
+          'it has not crossed over yet, so not crediting the arrival');
+      return false;
+    }
+
+    logWarn('Drone $droneId is standing ${off.toStringAsFixed(1)}m from vertex '
+        '$vertex at ${speed.toStringAsFixed(1)}m/s, and ${back.toStringAsFixed(1)}m '
+        'from where it set out - it did arrive and its ARRIVED was lost. '
+        'Crediting the step; not landing it', _tag);
+    _reachBarrier(droneId, p, 'on vertex $vertex (confirmed by STATUS - its '
+        'ARRIVED never reached us)');
+    return true;
+  }
+
+  /// Where the leg in progress started: the previous vertex, or the anchor for
+  /// the first step off the muster.
+  LatLng _legOrigin(DemoProgress p) => p.steps > 0
+      ? p.figure[(p.steps - 1) % p.figure.length]
+      : _anchorOf(p);
+
   /// A drone has reached the vertex it was sent to and is now standing still.
   void _reachBarrier(int droneId, DemoProgress p, String why) {
     _steppingSince.remove(droneId);
+    _lastProbe.remove(droneId);
     _progress[droneId] = p.copyWith(phase: DemoPhase.holding, detail: why);
     _heldSince[droneId] = DateTime.now();
     _conflicts.setTarget(droneId, null);   // parked, so it is not going anywhere
-    if (_lockedLockstep && _flying) _barrierSince ??= DateTime.now();
     logInfo('Drone $droneId holding ($why)', _tag);
     notifyListeners();
     _releaseBarrier();
@@ -840,7 +1011,6 @@ class DemoRunner extends ChangeNotifier {
     }
 
     _flying = true;
-    _barrierSince = null;
     logInfo('Formation released with ${ready.length} drone(s): '
         '${ready.join(", ")}', _tag);
     notifyListeners();
@@ -855,15 +1025,8 @@ class DemoRunner extends ChangeNotifier {
     // freeze the whole formation for its 15-45 s arm-and-climb -- the very thing
     // the offset altitude exists to avoid.
     final formation = _inFigure.toList();
-    if (formation.isEmpty) {
-      _barrierSince = null;
-      return;
-    }
+    if (formation.isEmpty) return;
     if (!formation.every((id) => _progress[id]!.isWaiting)) return;
-
-    // Everybody is here, so nobody is a straggler any more, whatever happens
-    // below.
-    _barrierSince = null;
 
     // The formation leaves together, so it leaves when the last one to arrive
     // has settled.
@@ -973,6 +1136,7 @@ class DemoRunner extends ChangeNotifier {
     _heldSince.remove(droneId);
     _conflicts.setTarget(droneId, target);
     _steppingSince[droneId] = DateTime.now();
+    _lastProbe.remove(droneId);
     _progress[droneId] = p.copyWith(
         phase: DemoPhase.stepping, steps: steps, detail: 'to vertex $vertex');
 
@@ -1050,22 +1214,25 @@ class DemoRunner extends ChangeNotifier {
     }
 
     if (!_flying) {
-      // Nothing below applies to a muster. The barrier timeout in particular
-      // would be lethal: it lands every formation member that is not yet
-      // holding, so the first drone to reach its anchor would start a six second
-      // clock on all the others -- which are, correctly, still climbing.
+      // Nothing below applies to a muster. Probing in particular would be
+      // pointless: a drone still climbing is not overdue at anything, and it
+      // cannot report from inside arm() and take_off() anyway.
       return;
     }
 
     if (_lockedLockstep) {
-      final waitingSince = _barrierSince;
-      if (waitingSince != null && now.difference(waitingSince) > barrierTimeout) {
-        final late = _inFigure.where((id) => !_progress[id]!.isWaiting).toList();
-        _barrierSince = null;
-        for (final id in late) {
-          _landInPlace(id, 'did not reach the vertex within '
-              '${barrierTimeout.inSeconds}s of the rest of the formation');
-        }
+      // Overdue at a vertex, measured from this drone's OWN dispatch. The clock
+      // used to start when the *first* drone reached its vertex, which charged
+      // every straggler for how quickly the others flew: a drone that landed on
+      // its vertex three seconds after the leader had three seconds left to get
+      // an `ARRIVED` through, not six.
+      for (final id in _inFigure.toList()) {
+        final p = _progress[id]!;
+        if (p.isWaiting) continue;
+        final left = _steppingSince[id];
+        if (left == null) continue;   // never dispatched; nothing is overdue
+        if (now.difference(left) <= barrierTimeout) continue;
+        _probeStraggler(id, p, now);
       }
       _releaseBarrier();
       return;
@@ -1146,9 +1313,40 @@ class DemoRunner extends ChangeNotifier {
       return;
     }
     if (!p.isActive) return;
+
+    // A straggler probe that went unanswered through every retry. This is the
+    // one place silence becomes evidence: we did not wait for a report the drone
+    // might never have sent, we asked a question on the acknowledged channel and
+    // got nothing back. A drone that cannot hear us or cannot answer is not one
+    // whose position the formation's geometry can rest on.
+    if (failure.message is StatusMessage) {
+      _landInPlace(failure.droneId, 'overdue at its vertex and did not answer '
+          'STATUS: ${failure.description}');
+      return;
+    }
+
     if (failure.message is! StartDemoMessage && failure.message is! MoveMessage) {
       return;
     }
+
+    // BUSY answering a START_DEMO for a drone that is already in THIS run means
+    // "already doing what you asked". It is the drone agreeing with us, and
+    // landing it for that is perverse.
+    //
+    // The earlier version of this only forgave BUSY on a *retry* of one command.
+    // On 2026-08-10 the app sent ten separate START_DEMOs to node 1 over a minute
+    // -- a lost ACK, then an operator pressing JOIN -- so every one of them was a
+    // first attempt, every BUSY counted as a rejection, and each one landed a
+    // drone that was flying the figure correctly at the time.
+    if (failure.kind == AckFailureKind.rejected &&
+        failure.reason == NackError.busy &&
+        failure.message is StartDemoMessage) {
+      logWarn('Drone ${failure.droneId} answered BUSY - it is already running '
+          'this demo, so nothing needs starting', _tag);
+      _tracker.dismissFailure(failure.droneId);
+      return;
+    }
+
     _landInPlace(failure.droneId, failure.description);
   }
 
@@ -1177,6 +1375,7 @@ class DemoRunner extends ChangeNotifier {
     _progress[droneId] = p.copyWith(phase: DemoPhase.landing, detail: reason);
     _heldSince.remove(droneId);
     _steppingSince.remove(droneId);
+    _lastProbe.remove(droneId);
     _conflicts.setTarget(droneId, null);
     // A MOVE still being chased would fly it off the spot it is coming down on.
     final abandoned = _pendingMove.remove(droneId);
@@ -1184,6 +1383,7 @@ class DemoRunner extends ChangeNotifier {
     logError('Drone $droneId out of formation: $reason - landing in place', _tag);
     notifyListeners();
 
+    _landCommanded.add(droneId);
     unawaited(_tracker.send((q) => LandMessage(seq: q), dest: droneId));
 
     // Whoever is left must not wait at a barrier for a drone that has gone.
@@ -1207,7 +1407,6 @@ class DemoRunner extends ChangeNotifier {
     _watchdog = null;
     _settleTimer?.cancel();
     _settleTimer = null;
-    _barrierSince = null;
   }
 
   /// How long this drone may go quiet before we stop believing its position,

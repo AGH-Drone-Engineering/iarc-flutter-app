@@ -163,6 +163,28 @@ The ground station picks the height so the return misses the formation — see �
 
 Reply with `ACK`, then a `TELEM`.
 
+### `PING`
+
+```json
+{ "v": 1, "q": 9, "t": "PING", "n": 1234 }
+```
+
+| Field | Type | Notes                                    |
+| ----- | ---- | ---------------------------------------- |
+| `n`   | int  | Ping counter, incrementing from 1        |
+
+**Nothing answers a `PING` — not an `ACK`, not a `NACK`, not even
+`UNSUPPORTED`.** It exists to measure the radio with the whole reliability layer
+switched off, and any reply would add a transmission to the thing being measured.
+A receiver that cannot act on it MUST drop it silently.
+
+`n` counts pings independently of `q` because `q` wraps and is shared with every
+other message the sender emits, whereas a gap in `n` is exactly one lost ping —
+and the *shape* of the gaps is the diagnosis: isolated singles are collisions, a
+run of a dozen is a fade or a full queue.
+
+Answered by `PONG` (§6) on the receiver's own timer, not per ping.
+
 ### Out of scope: the killswitch
 
 Cutting motors is a hardware function of the IARC HAT — the ESP32-S3 drives
@@ -444,6 +466,30 @@ vehicle has settled, not the moment the target radius is entered.
 `ARRIVED` is also sent once after takeoff, with `to` set to the anchor, so the
 opening barrier of a demo rests on the same acknowledged message as every later
 step rather than on `EVT`/`MISSION_START`.
+
+### `PONG`
+
+```json
+{ "v": 1, "q": 12, "t": "PONG", "rx": 480, "tx": 120, "last": 502 }
+```
+
+| Field  | Type | Notes                                        |
+| ------ | ---- | -------------------------------------------- |
+| `rx`   | int  | `PING`s this node has received               |
+| `tx`   | int  | `PONG`s this node has now sent               |
+| `last` | int  | `n` of the newest `PING` seen                |
+
+Sent on a timer (once a second), **not** per `PING`, and acknowledged by nobody.
+
+Those three counters against what the ground station tallied separate the two
+directions, which a missing `ACK` can never do — an absent `ACK` cannot
+distinguish "the command never arrived" from "the command arrived and its answer
+was lost":
+
+```
+uplink loss   = 1 - rx / pings_sent
+downlink loss = 1 - pongs_received / tx
+```
 
 ### `EVT`
 

@@ -46,6 +46,8 @@ class _EspDataTabState extends State<EspDataTab>
           const _AckSection(),
           const SizedBox(height: 16),
           const _DebugSection(),
+          const SizedBox(height: 12),
+          const _ProbeSection(),
           const SizedBox(height: 16),
           const _StatusRow(),
         ],
@@ -473,6 +475,66 @@ class _DebugSection extends StatelessWidget {
               app.transport.describeDest(running ? debug.dest : app.selectedTarget)),
           _kv(context, 'Sent', '${debug.sent}'),
           _kv(context, 'Skipped, link still busy', '${debug.skipped}'),
+        ],
+      ),
+    );
+  }
+}
+
+class _ProbeSection extends StatelessWidget {
+  const _ProbeSection();
+
+  @override
+  Widget build(BuildContext context) {
+    final app = context.watch<AppState>();
+    final scheme = Theme.of(context).colorScheme;
+    final probe = app.probe;
+    final running = probe.isRunning;
+
+    String pct(double? v) =>
+        v == null ? '—' : '${(v * 100).toStringAsFixed(0)}%';
+
+    return _Card(
+      title: 'Link probe (no ACKs)',
+      subtitle: 'Numbered PINGs at a fixed rate; the drone replies with its own '
+          'counters once a second. Nothing is acknowledged, retried or deduped '
+          'in either direction — so this measures the radio, not the radio plus '
+          'the machinery. Run loracom_pingpong.py on the drone.',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _NumberField(
+            label: 'Ping every',
+            suffix: 'ms',
+            value: probe.interval.inMilliseconds,
+            min: 50,
+            max: 10000,
+            onChanged: (ms) => probe.interval = Duration(milliseconds: ms),
+          ),
+          const SizedBox(height: 12),
+          FilledButton.icon(
+            onPressed: (!app.isConnected && !running)
+                ? null
+                : () => running
+                    ? probe.stop()
+                    : probe.start(dest: app.selectedTarget),
+            icon: Icon(running ? Icons.stop : Icons.play_arrow),
+            label: Text(running ? 'Stop' : 'Start'),
+            style: FilledButton.styleFrom(
+              minimumSize: const Size.fromHeight(46),
+              backgroundColor: running ? scheme.error : null,
+              foregroundColor: running ? scheme.onError : null,
+            ),
+          ),
+          const SizedBox(height: 12),
+          _kv(context, 'Target',
+              app.transport.describeDest(running ? probe.dest : app.selectedTarget)),
+          _kv(context, 'PINGs sent', '${probe.sent}'),
+          _kv(context, 'Drone saw', '${probe.droneRx ?? "—"}'),
+          _kv(context, 'Uplink lost', pct(probe.uplinkLoss)),
+          _kv(context, 'PONGs received', '${probe.pongs}'),
+          _kv(context, 'Drone sent', '${probe.droneTx ?? "—"}'),
+          _kv(context, 'Downlink lost', pct(probe.downlinkLoss)),
         ],
       ),
     );

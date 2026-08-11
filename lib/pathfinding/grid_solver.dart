@@ -126,8 +126,7 @@ GridPath columnsToPath(List<int> columns, int green) =>
 /// Strefa jest symetryczna, więc warunek odwraca się wprost: mina trafia do
 /// strefy dokładnie wtedy, gdy ścieżka wejdzie w jej strefę. Blokadą jest więc
 /// ten sam kształt, tylko postawiony wokół miny -- romb dla strefy rombowej,
-/// kwadrat dla [GreenZoneShape.square], krzyż dla
-/// [GreenZoneShape.perpendicular].
+/// kwadrat dla [GreenZoneShape.square].
 ///
 /// Do tego dochodzi rozdmuchanie miny o `mineInflation`, chroniące przed błędem
 /// GPS niezależnie od G.

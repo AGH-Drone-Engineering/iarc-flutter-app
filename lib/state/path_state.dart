@@ -36,7 +36,7 @@ class PathState extends ChangeNotifier {
   double _overweightOz = 0.0;
   int _maxGreen = maxGreenSquares;
   int _mineInflation = 1;
-  GreenZoneShape _shape = GreenZoneShape.perpendicular;
+  GreenZoneShape _shape = GreenZoneShape.manhattan;
   bool _officialGrid = true;
 
   bool _computing = false;

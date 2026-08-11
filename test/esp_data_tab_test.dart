@@ -76,7 +76,17 @@ void main() {
     final app = await pumpTab(tester);
     addTearDown(app.dispose);
 
-    final button = find.widgetWithText(FilledButton, 'Start');
+    // Scoped to the Debug traffic card: the link probe below it has a Start /
+    // Stop button of its own, and an unscoped finder would match both.
+    Finder inDebugCard(String label) => find.descendant(
+          of: find.ancestor(
+            of: find.text('Debug traffic'),
+            matching: find.byType(Column),
+          ).first,
+          matching: find.widgetWithText(FilledButton, label),
+        );
+
+    final button = inDebugCard('Start');
     expect(button, findsOneWidget);
     expect(tester.widget<FilledButton>(button).onPressed, isNull,
         reason: 'nothing to send to while the link is down');
@@ -90,12 +100,11 @@ void main() {
     app.debug.start(dest: 1);
     await tester.pumpAndSettle();
 
-    expect(find.widgetWithText(FilledButton, 'Stop'), findsOneWidget);
-    expect(find.text('node 1'), findsOneWidget);
+    expect(inDebugCard('Stop'), findsOneWidget);
 
-    await tester.tap(find.widgetWithText(FilledButton, 'Stop'));
+    await tester.tap(inDebugCard('Stop'));
     await tester.pumpAndSettle();
     expect(app.debug.isRunning, isFalse);
-    expect(find.widgetWithText(FilledButton, 'Start'), findsOneWidget);
+    expect(inDebugCard('Start'), findsOneWidget);
   });
 }

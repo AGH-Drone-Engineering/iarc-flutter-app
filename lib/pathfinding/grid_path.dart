@@ -59,14 +59,19 @@ class Cell {
 /// ale przy G=6 się rozjeżdża: zrzut ma prostą krawędź pod 45 stopni, a koło
 /// dałoby łuk.
 ///
-/// [perpendicular] -- G komórek prostopadle do każdego prostego odcinka, bez
-/// wypełniania narożników. Pierwsze odczytanie spec.txt, obalone przez zrzut.
-///
 /// [square] -- dylatacja Czebyszewa. Zawyża B, bo bierze narożniki, których
-/// symulator nie liczy.
+/// symulator nie liczy. Zostaje tylko do porównań; do liczenia oddawanego
+/// wyniku służy [manhattan].
+///
+/// Był tu jeszcze `perpendicular` -- G komórek prostopadle do każdego prostego
+/// odcinka, bez wypełniania narożników. To pierwsze odczytanie spec.txt, obalone
+/// przez zrzut symulatora, a jego strefa jest *podzbiorem* rombowej: różnią się
+/// wyłącznie komórkami narożnikowymi na zakrętach. Dlatego nie dawał wyniku
+/// "innego", tylko systematycznie zaniżone B, czyli zawyżony wynik -- a solver
+/// prowadził zakręt obok miny, którą uważał za bezpieczną. Usunięty, żeby nie
+/// dało się go wybrać przez pomyłkę.
 enum GreenZoneShape {
   manhattan('manhattan'),
-  perpendicular('perpendicular'),
   square('square');
 
   const GreenZoneShape(this.wireName);
@@ -352,27 +357,11 @@ Set<Cell> greenZoneCells(
         }
       }
     }
-  } else if (shape == GreenZoneShape.square) {
+  } else {
     for (final cell in cells) {
       for (var dx = -green; dx <= green; dx++) {
         for (var dy = -green; dy <= green; dy++) {
           zone.add(Cell(cell.x + dx, cell.y + dy));
-        }
-      }
-    }
-  } else {
-    for (final (a, b) in pathRuns(cells)) {
-      if (a.x == b.x) {
-        for (var y = math.min(a.y, b.y); y <= math.max(a.y, b.y); y++) {
-          for (var dx = -green; dx <= green; dx++) {
-            zone.add(Cell(a.x + dx, y));
-          }
-        }
-      } else {
-        for (var x = math.min(a.x, b.x); x <= math.max(a.x, b.x); x++) {
-          for (var dy = -green; dy <= green; dy++) {
-            zone.add(Cell(x, a.y + dy));
-          }
         }
       }
     }
@@ -391,42 +380,21 @@ int zoneReach(int green, int dy, GreenZoneShape shape) {
   switch (shape) {
     case GreenZoneShape.square:
       return green;
-    case GreenZoneShape.perpendicular:
-      return dy == 0 ? green : 0;
     case GreenZoneShape.manhattan:
       return green - dy.abs();
   }
 }
 
-/// Czy prosty odcinek `a..b` ścieżki wciąga minę do strefy zielonej.
-bool _runCoversMine(
-  Cell a,
-  Cell b,
-  Cell mine,
-  int green,
-  GreenZoneShape shape,
-) {
-  final loX = math.min(a.x, b.x);
-  final hiX = math.max(a.x, b.x);
-  final loY = math.min(a.y, b.y);
-  final hiY = math.max(a.y, b.y);
-
-  if (shape == GreenZoneShape.square) {
-    return mine.x >= loX - green &&
-        mine.x <= hiX + green &&
-        mine.y >= loY - green &&
-        mine.y <= hiY + green;
-  }
-  if (a.x == b.x) {
-    return mine.x >= loX - green &&
-        mine.x <= hiX + green &&
-        mine.y >= loY &&
-        mine.y <= hiY;
-  }
-  return mine.x >= loX &&
-      mine.x <= hiX &&
-      mine.y >= loY - green &&
-      mine.y <= hiY + green;
+/// Czy prosty odcinek `a..b` ścieżki wciąga minę do strefy [GreenZoneShape.square].
+///
+/// Dylatacja Czebyszewa odcinka to jego prostokąt otaczający rozszerzony o G w
+/// każdą stronę, więc cała strefa wychodzi jako suma takich prostokątów po
+/// odcinkach -- bez chodzenia po komórkach.
+bool _runCoversMineSquare(Cell a, Cell b, Cell mine, int green) {
+  return mine.x >= math.min(a.x, b.x) - green &&
+      mine.x <= math.max(a.x, b.x) + green &&
+      mine.y >= math.min(a.y, b.y) - green &&
+      mine.y <= math.max(a.y, b.y) + green;
 }
 
 /// B -- liczba min w strefie zielonej, bez materializowania samej strefy.
@@ -462,7 +430,7 @@ int missedMineCount(
   for (final mine in field.mines) {
     if (onPath.contains(mine)) continue;
     for (final (a, b) in runs) {
-      if (_runCoversMine(a, b, mine, green, shape)) {
+      if (_runCoversMineSquare(a, b, mine, green)) {
         missed++;
         break;
       }

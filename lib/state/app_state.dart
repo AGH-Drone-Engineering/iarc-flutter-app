@@ -12,6 +12,7 @@ import '../pathfinding/field_grid.dart' show ScanRegion;
 import '../services/command_tracker.dart';
 import '../services/debug_traffic.dart';
 import '../services/demo_runner.dart';
+import '../services/link_probe.dart';
 import '../services/global_log.dart';
 import '../services/lora_link_service.dart';
 import '../services/udp_link_service.dart';
@@ -32,9 +33,11 @@ class AppState extends ChangeNotifier {
     );
     demo = DemoRunner(tracker: tracker);
     debug = DebugTraffic(tracker: tracker);
+    probe = LinkProbe(tracker: tracker);
     tracker.addListener(notifyListeners);
     demo.addListener(notifyListeners);
     debug.addListener(notifyListeners);
+    probe.addListener(notifyListeners);
   }
 
   late final LoraLinkService lora;
@@ -42,6 +45,7 @@ class AppState extends ChangeNotifier {
   late final CommandTracker tracker;
   late final DemoRunner demo;
   late final DebugTraffic debug;
+  late final LinkProbe probe;
 
   late LinkConfig config;
 
@@ -269,6 +273,10 @@ class AppState extends ChangeNotifier {
         if (_acknowledgeReport(incoming.from, a.seq, 'ARRIVED')) {
           demo.handleArrived(incoming.from, a);
         }
+      case PongMessage p:
+        // Straight to the probe and nowhere else. Deliberately not answered:
+        // a reply would add a transmission to the thing being measured.
+        probe.handlePong(incoming.from, p);
       case EventMessage e:
         drone?.lastEvent = e.event;
         demo.handleEvent(incoming.from, e.event);

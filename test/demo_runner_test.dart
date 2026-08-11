@@ -84,7 +84,7 @@ void ackLast(CommandTracker tracker, FakeSender sender, int drone,
 var _sample = 1000;
 
 void telem(DemoRunner runner, int drone, DroneState state, LatLng position,
-    {int? sampleMs}) {
+    {int? sampleMs, ({double north, double east})? velocity}) {
   _sample += 1000;
   runner.handleTelemetry(
     drone,
@@ -94,6 +94,7 @@ void telem(DemoRunner runner, int drone, DroneState state, LatLng position,
       altitude: 3.0,
       state: state,
       sampleMs: sampleMs ?? _sample,
+      velocity: velocity,
     ),
   );
 }
@@ -406,22 +407,114 @@ void main() {
     tracker.dispose();
   });
 
-  test('a straggler is landed once the barrier times out', () async {
+  // A lost ARRIVED used to be indistinguishable from a drone that never got
+  // there, and the barrier resolved the ambiguity by landing it. At the measured
+  // loss rate two consecutive retransmissions vanishing is a 12% event per
+  // barrier, so that guess was wrong most of the times it mattered.
+
+  test('an overdue straggler is asked where it is, not landed', () async {
     final sender = FakeSender();
     final (:tracker, :runner) =
         await launched(sender, barrierTimeout: const Duration(milliseconds: 80));
     final figureA = runner.progressFor(1)!.figure;
+    ackLast(tracker, sender, 1);           // the MOVEs are received; only the
+    ackLast(tracker, sender, 2);           // arrival report goes missing
 
-    flyTo(runner, 1, figureA[0]);          // drone 1 arrives, drone 2 never does
+    flyTo(runner, 1, figureA[0]);          // drone 1 arrives, drone 2 says nothing
     await pump();
     expect(runner.progressFor(2)!.phase, DemoPhase.stepping);
 
-    await settle(200);
+    await settle(120);                     // long enough for the probe to go out
+
+    expect(sender.to(2).whereType<StatusMessage>(), isNotEmpty,
+        reason: 'the ambiguity is resolved by asking, on the acknowledged channel');
+    ackLast(tracker, sender, 2);           // it answers: alive, just not reporting
+    await settle(120);
+
+    expect(runner.progressFor(2)!.phase, DemoPhase.stepping,
+        reason: 'silence on the arrival path is not evidence it never arrived');
+    expect(sender.to(2).whereType<LandMessage>(), isEmpty);
+
+    runner.dispose();
+    tracker.dispose();
+  });
+
+  test('a straggler standing on its vertex is credited, not punished', () async {
+    final sender = FakeSender();
+    final (:tracker, :runner) =
+        await launched(sender, barrierTimeout: const Duration(milliseconds: 80));
+    final figureA = runner.progressFor(1)!.figure;
+    final figureB = runner.progressFor(2)!.figure;
+    ackLast(tracker, sender, 1);
+    ackLast(tracker, sender, 2);
+
+    flyTo(runner, 1, figureA[0]);
+    await settle(120);                     // drone 2 is overdue, and now probed
+    ackLast(tracker, sender, 2);
+
+    // Its answer: parked on the vertex, stopped. The ARRIVED itself never came.
+    telem(runner, 2, DroneState.hover, figureB[0],
+        velocity: (north: 0.0, east: 0.0));
+    await pump();
+
+    expect(runner.progressFor(2)!.phase, DemoPhase.holding);
+    expect(runner.progressFor(2)!.detail, contains('ARRIVED never reached us'));
+    expect(runner.progressFor(1)!.steps, 1, reason: 'the formation steps on');
+    expect(runner.progressFor(2)!.steps, 1);
+    expect(sender.to(2).whereType<LandMessage>(), isEmpty);
+
+    runner.dispose();
+    tracker.dispose();
+  });
+
+  test('a straggler still under way is not credited by a passing position',
+      () async {
+    final sender = FakeSender();
+    final (:tracker, :runner) =
+        await launched(sender, barrierTimeout: const Duration(milliseconds: 80));
+    final figureA = runner.progressFor(1)!.figure;
+    final figureB = runner.progressFor(2)!.figure;
+    ackLast(tracker, sender, 1);
+    ackLast(tracker, sender, 2);
+
+    flyTo(runner, 1, figureA[0]);
+    await settle(120);
+    ackLast(tracker, sender, 2);
+
+    // Moving, so not an arrival however close it looks.
+    telem(runner, 2, DroneState.demo, figureB[0],
+        velocity: (north: 2.0, east: 0.0));
+    await pump();
+    expect(runner.progressFor(2)!.phase, DemoPhase.stepping);
+
+    // Stopped, but back where the leg started -- it has not crossed over.
+    telem(runner, 2, DroneState.hover, _anchorB,
+        velocity: (north: 0.0, east: 0.0));
+    await pump();
+    expect(runner.progressFor(2)!.phase, DemoPhase.stepping);
+    expect(runner.progressFor(1)!.steps, 0, reason: 'the barrier still holds');
+
+    runner.dispose();
+    tracker.dispose();
+  });
+
+  test('a straggler that never answers STATUS is landed', () async {
+    final sender = FakeSender();
+    // Nothing is acked here, so the probe exhausts its 60 ms x 3 attempts. That
+    // is the one thing silence cannot say: not "no report came" but "the drone
+    // cannot answer a question we know it received a copy of".
+    final (:tracker, :runner) =
+        await launched(sender, barrierTimeout: const Duration(milliseconds: 80));
+    final figureA = runner.progressFor(1)!.figure;
+    ackLast(tracker, sender, 1);
+    ackLast(tracker, sender, 2);
+
+    flyTo(runner, 1, figureA[0]);
+    await settle(400);
 
     expect(runner.progressFor(2)!.phase, DemoPhase.landing);
-    expect(runner.progressFor(2)!.detail, contains('did not reach the vertex'));
+    expect(runner.progressFor(2)!.detail, contains('did not answer STATUS'));
     expect(sender.lastTo(2), isA<LandMessage>());
-    expect(runner.progressFor(1)!.steps, 1, reason: 'the rest are released');
 
     runner.dispose();
     tracker.dispose();
@@ -776,6 +869,93 @@ void main() {
   });
 
   // ---- the figure has to be measurable ------------------------------------
+
+  // ---- regressions from phone.log 2026-08-10 22:36, two drones over LoRa ----
+  // The link lost 35% of its frames. Node 1's START_DEMO ACK went missing three
+  // times, the app gave up, and from there its model of that drone flip-flopped
+  // for a minute while the drone itself was flying perfectly.
+
+  test('BUSY from a drone already running this demo does not land it', () async {
+    final sender = FakeSender();
+    final (:tracker, :runner) = await launched(sender);
+    final failures = <String>[];
+    runner.addListener(() {});
+
+    // The app sends another START_DEMO to a drone that is already in the run --
+    // a lost ACK, or an operator pressing JOIN. Ten of these went out on the day.
+    final seq = await tracker.send(
+        (q) => StartDemoMessage(seq: q, altitude: 3.0), dest: 1);
+    tracker.handleIncoming(
+      1,
+      NackMessage(seq: 800, respondingTo: seq, error: NackError.busy),
+    );
+    await pump();
+
+    expect(runner.progressFor(1)!.phase, isNot(DemoPhase.landing),
+        reason: 'BUSY here means "already doing what you asked"');
+    expect(sender.to(1).whereType<LandMessage>(), isEmpty);
+    expect(tracker.failureFor(1), isNull);
+    expect(failures, isEmpty);
+
+    runner.dispose();
+    tracker.dispose();
+  });
+
+  test('a drone already in the run is not started a second time', () async {
+    final sender = FakeSender();
+    final (:tracker, :runner) = await launched(sender);
+    final before = sender.to(1).whereType<StartDemoMessage>().length;
+
+    expect(await runner.addDrones([1]), contains('already in the run'));
+    expect(sender.to(1).whereType<StartDemoMessage>().length, before,
+        reason: 'a second START_DEMO could only ever come back BUSY');
+
+    runner.dispose();
+    tracker.dispose();
+  });
+
+  test('a drone we have already landed is not adopted back mid-climb', () async {
+    final sender = FakeSender();
+    final (:tracker, :runner) = build(sender);
+    await runner.start([1, 2], 3.0);
+    ackLast(tracker, sender, 2);
+    becomeAirborne(runner, 2);
+    await pump();
+
+    // Answer node 1's LAND but never its START_DEMO. That is the situation on the
+    // day: the start ACK was lost, so the app gave up; and the LAND has to be
+    // acknowledged or its own retries exhaust and _escalate ends the whole run,
+    // which would send what follows down the stray path instead of this one.
+    final ackLands = Timer.periodic(const Duration(milliseconds: 5), (_) {
+      if (sender.to(1).isNotEmpty &&
+          sender.lastTo(1) is LandMessage &&
+          tracker.isAwaitingAck(1)) {
+        ackLast(tracker, sender, 1);
+      }
+    });
+
+    telem(runner, 1, DroneState.takeoff, _anchorA);   // airborne, so it is landed
+    await settle(400);
+    ackLands.cancel();
+
+    final landed = sender.to(1).whereType<LandMessage>().length;
+    expect(landed, greaterThan(0), reason: 'we commanded it down');
+    expect(runner.progressFor(1)!.isActive, isFalse);
+    expect(runner.isRunning, isTrue, reason: 'drone 2 is still mustering');
+
+    // Its ARRIVED, sent while it was still climbing, reaches us after our LAND.
+    // Adopting it means landing it again a moment later for reporting LANDING -
+    // punishing a drone for obeying.
+    arrive(runner, 1, _anchorA);
+    await pump();
+
+    expect(runner.progressFor(1)!.isActive, isFalse, reason: 'not re-adopted');
+    expect(sender.to(1).whereType<LandMessage>().length, landed,
+        reason: 'and not landed a second time either');
+
+    runner.dispose();
+    tracker.dispose();
+  });
 
   // ---- mustering: getting a swarm airborne is not part of the choreography --
 
@@ -1223,6 +1403,8 @@ void main() {
     ackLast(tracker, sender, 1);
     ackLast(tracker, sender, 2);
     final figureA = runner.progressFor(1)!.figure;
+    ackLast(tracker, sender, 1);
+    ackLast(tracker, sender, 2);
 
     flyTo(runner, 1, figureA[0]);
     await settle(400);
