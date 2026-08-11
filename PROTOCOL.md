@@ -414,13 +414,32 @@ misread; dropping one is worse than showing both.
 | -------- | ----- | ------------------------------------------------------------------------------ |
 | `a`, `b` | array | Two opposite corners, each `[lat, lon]` — latitude first. Order is irrelevant. |
 
-Reports a lat/lon-aligned rectangle the drone has **processed** — one per
-analysed frame. It does not claim the rectangle is empty: mines found inside it
-are reported separately via `MINE`.
+Reports a lat/lon-aligned rectangle the drone has **processed**. It does not claim
+the rectangle is empty: mines found inside it are reported separately via `MINE`.
 
-Sent immediately as each frame is processed, never batched — a mission emits
-many, and an `RTH` or a lost link must not cost the coverage already earned. The
-ground station accumulates them, so overlapping or repeated rectangles are
+**One per leg of the route, not one per frame.** A frame's footprint is a couple of
+metres across, so a 100 m leg at 2 m altitude produces ~50 of them describing one
+continuous strip — and on a link four drones share, that was the single largest
+consumer of airtime. A drone flying straight has swept one rectangle, so it sends
+one rectangle. The drone closes a leg when it turns, and again at the end of
+scanning.
+
+Aggregating is only sound while the rectangle stays honest, and there is a limit:
+`a`/`b` are lat/lon-aligned, so a leg flown at an angle to the meridian sweeps a
+*skewed* strip whose bounding box includes ground the camera never saw. Since
+unscanned terrain is treated as mined and scanned terrain is walked over, that
+over-claim is the dangerous direction. So a sender MUST bound how far a rectangle
+reaches beyond what was actually imaged — measured across the direction of travel,
+in metres — and split the leg when the bound would be exceeded. An axis-aligned leg
+has zero excess and collapses to a single frame; a 45° leg barely aggregates at
+all, which is correct rather than unfortunate. `comms/scan_report.py` implements
+this and is shared by the mock vision and, when it lands, the real one.
+
+`MINE` is **not** aggregated and never waits for a leg to close. It is the one
+message the mission exists to deliver, so it goes out from the frame it was seen
+in; batching it would mean an aborted flight took its findings with it.
+
+The ground station accumulates rectangles, so overlapping or repeated ones are
 harmless and a drone need not track what it has already sent.
 
 This is what lets the ground station tell _"no mine here"_ apart from _"nobody

@@ -322,9 +322,80 @@ class _Controls extends StatelessWidget {
               ),
             ),
           const SizedBox(height: 8),
+          const _GridModePicker(),
+          const SizedBox(height: 8),
           const _SolveButton(),
         ],
       ),
+    );
+  }
+}
+
+/// Którą siatką pokryć pole. Wybiera się sam; da się nadpisać.
+///
+/// Istnieje, bo bez tego stan `officialGrid` nie miał żadnej kontrolki i siedział
+/// na `true`: każde pole testowe wzięte z losowych współrzędnych było dzielone na
+/// dokładnie 40 x 150 części, więc komórka rozciągała się do cienkiego prostokąta
+/// (na polu 400 x 90 m: 10 x 0.6 m). Widok pokazywał wtedy paski, a nie kwadraty
+/// 2x2 stopy, po których naprawdę idzie się przez pole.
+class _GridModePicker extends StatelessWidget {
+  const _GridModePicker();
+
+  @override
+  Widget build(BuildContext context) {
+    final state = context.watch<PathState>();
+    final official = state.officialGrid;
+    final auto = state.officialGridIsAuto;
+    final cell = state.mapped?.mapping;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        SegmentedButton<bool?>(
+          showSelectedIcon: false,
+          segments: const [
+            ButtonSegment(
+              value: null,
+              label: Text('Auto'),
+              icon: Icon(Icons.auto_awesome, size: 16),
+            ),
+            ButtonSegment(
+              value: true,
+              label: Text('40 x 150'),
+              icon: Icon(Icons.emoji_events_outlined, size: 16),
+            ),
+            ButtonSegment(
+              value: false,
+              label: Text('2 ft'),
+              icon: Icon(Icons.grid_4x4, size: 16),
+            ),
+          ],
+          selected: {auto ? null : official},
+          onSelectionChanged: (s) => state.setOfficialGrid(s.first),
+        ),
+        Padding(
+          padding: const EdgeInsets.only(top: 4),
+          child: Text(
+            [
+              if (official)
+                'Siatka zawodowa: pole dzielone na dokładnie 40 x 150 komórek, '
+                    'żeby path.txt trafił w siatkę sędziowską.'
+              else
+                'Kwadraty 2x2 stopy, liczba komórek z pomiaru. Do debugowania - '
+                    'path.txt z tej siatki NIE jest siatką scorera.',
+              if (auto) 'Wybrane automatycznie z wymiarów pola.',
+              if (cell != null)
+                'Komórka ${cell.cellU.toStringAsFixed(2)} x '
+                    '${cell.cellV.toStringAsFixed(2)} m.',
+            ].join(' '),
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: official
+                      ? null
+                      : Theme.of(context).colorScheme.tertiary,
+                ),
+          ),
+        ),
+      ],
     );
   }
 }

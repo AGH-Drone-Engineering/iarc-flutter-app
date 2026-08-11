@@ -43,6 +43,43 @@ const double maxCornerFixMeters = 8.0;
 /// Siatka oficjalnego pola z Huntsville -- 80 x 300 stóp.
 const (int, int) officialGridSize = (officialCols, officialRows);
 
+/// Ile procent zmierzone pole może odstawać od 80 x 300 stóp i nadal liczyć się
+/// jako pole zawodowe.
+///
+/// Hojnie: cztery rogi zdjęte telefonem to metry błędu, a nie centymetry, i
+/// pomyłka na tym poziomie nie zmienia tego, że mierzymy pole zawodowe.
+const double officialFieldTolerance = 0.10;
+
+/// Czy to jest (z grubsza) pole zawodowe 80 x 300 stóp.
+///
+/// Rozstrzyga, którą siatką je pokryć, i dlatego nie jest kosmetyką:
+///
+/// * **pole zawodowe** -> wymuszone 40 x 150 komórek. Zmierzony bok nigdy nie
+///   wychodzi równo na 2 stopy, a `path.txt` musi trafić w siatkę sędziowską co
+///   do komórki, więc dzielimy pomiar na dokładnie tyle części, ile ma scorer.
+/// * **dowolne pole testowe** -> komórki 2x2 stopy i tyle kolumn/wierszy, ile
+///   się zmieści. Wymuszenie 40 x 150 na polu 400 x 90 m rozciąga komórkę do
+///   10 x 0.6 m: siatka przestaje być siatką kwadratów, a to, co widać na mapie,
+///   przestaje mieć cokolwiek wspólnego z tym, po czym idzie człowiek.
+bool fieldMatchesOfficial(List<LatLng> corners,
+    {double tolerance = officialFieldTolerance}) {
+  if (corners.length < 3) return true;   // nic nie wiemy - nie zmieniaj domyślnej
+  final frame = LocalFrame.fromPoints(corners);
+  final polygon = asCcw(frame.manyToXy(corners));
+  final sides = [
+    for (var i = 0; i < polygon.length; i++)
+      distanceBetween(polygon[i], polygon[(i + 1) % polygon.length]),
+  ]..sort();
+
+  // Mediana krótszej i dłuższej pary, żeby jeden odstający róg nie decydował.
+  final shortSide = (sides.first + sides[1]) / 2.0;
+  final longSide = (sides[sides.length - 2] + sides.last) / 2.0;
+  final wantShort = officialCols * cellMeters;    // 80 stóp
+  final wantLong = officialRows * cellMeters;     // 300 stóp
+  return (shortSide - wantShort).abs() <= wantShort * tolerance &&
+      (longSide - wantLong).abs() <= wantLong * tolerance;
+}
+
 /// Przeliczenie GPS <-> komórka siatki.
 ///
 /// Układ siatki: początek w lewym narożniku linii startu, [axisX] wzdłuż linii
@@ -387,16 +424,46 @@ _CornerFix _fixCorner(List<Vec2> polygon) {
   );
 }
 
-/// Bok linii startu: najbliższy obserwatorowi, awaryjnie najkrótszy.
+/// Bok linii startu: KRÓTSZY bok, a spośród dwóch krótszych ten bliżej operatora.
+///
+/// Kolejność tych dwóch warunków jest cała treść tej funkcji. Przez pole idzie się
+/// wzdłuż jego DŁUGIEJ osi -- spec.txt: 80 stóp szerokości na 300 stóp długości, a
+/// ścieżka wchodzi z linii frontu i ma dojść do przeciwnego końca. Linią startu
+/// może więc być tylko jeden z dwóch krótkich boków; operator decyduje jedynie,
+/// KTÓRY z nich.
+///
+/// Wcześniej to była jedna reguła: "bok najbliższy obserwatorowi, awaryjnie
+/// najkrótszy". Awaryjna gałąź była przypadkiem poprawna (na polu zawodowym
+/// najkrótszy bok to właśnie krótki koniec), ale pierwsza ją nadpisywała: telefon
+/// stojący przy DŁUGIM boku wybierał ten bok na linię startu, siatka kładła 40
+/// kolumn na 300 stopach i 150 wierszy na 80 stopach, a ścieżka szła przez pole
+/// w poprzek zamiast na wylot. Objawem były ostrzeżenia o rozmiarze komórki
+/// (2.3 m zamiast 0.61 m) i jaśniejszy niebieski bok wzdłuż długiej krawędzi.
 int _frontEdgeIndex(List<Vec2> polygon, Vec2? observer) {
   final n = polygon.length;
-  var best = 0;
+  final lengths = [
+    for (var i = 0; i < n; i++)
+      distanceBetween(polygon[i], polygon[(i + 1) % n]),
+  ];
+
+  // Kandydaci: boki nie dłuższe niż mediana. Na czworokącie zostawia to dwa
+  // krótkie końce, także gdy pomiar jest niedokładny albo pole jest trapezem, bo
+  // porównujemy z medianą, a nie z minimum.
+  final sorted = [...lengths]..sort();
+  final median = (sorted[(n - 1) ~/ 2] + sorted[n ~/ 2]) / 2.0;
+  final candidates = [
+    for (var i = 0; i < n; i++)
+      if (lengths[i] <= median) i,
+  ];
+  final pool = candidates.isEmpty ? [for (var i = 0; i < n; i++) i] : candidates;
+
+  var best = pool.first;
   var bestValue = double.infinity;
-  for (var i = 0; i < n; i++) {
+  for (final i in pool) {
     final a = polygon[i];
     final b = polygon[(i + 1) % n];
     final value = observer == null
-        ? distanceBetween(a, b)
+        ? lengths[i]
         : pointSegmentDistance(observer, a, b);
     if (value < bestValue) {
       bestValue = value;
@@ -473,7 +540,7 @@ MappedField mapField({
   final front = _frontEdgeIndex(polygon, observerXy);
   if (observerXy == null) {
     warnings.add(
-      'brak pozycji obserwatora -- za linię startu przyjęto najkrótszy bok',
+      'brak pozycji obserwatora -- za linię startu przyjęto krótszy z dwóch końców pola; jeśli to zły koniec, ścieżka wyjdzie z przeciwnej strony',
     );
   }
 

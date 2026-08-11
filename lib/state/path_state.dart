@@ -37,7 +37,7 @@ class PathState extends ChangeNotifier {
   int _maxGreen = maxGreenSquares;
   int _mineInflation = 1;
   GreenZoneShape _shape = GreenZoneShape.manhattan;
-  bool _officialGrid = true;
+  bool? _officialGridOverride;
 
   bool _computing = false;
   bool _stale = true;
@@ -53,7 +53,28 @@ class PathState extends ChangeNotifier {
   int get maxGreen => _maxGreen;
   int get mineInflation => _mineInflation;
   GreenZoneShape get shape => _shape;
-  bool get officialGrid => _officialGrid;
+  /// Czy pokryć pole wymuszoną siatką 40 x 150, czy komórkami 2x2 stopy.
+  ///
+  /// Domyślnie AUTOMATYCZNIE, z wymiarów pola ([fieldMatchesOfficial]): pole
+  /// zawodowe dostaje 40 x 150, bo tylko taka siatka daje `path.txt` zgodny ze
+  /// scorerem; pole testowe wzięte z losowych współrzędnych dostaje prawdziwe
+  /// kwadraty 2x2 stopy, bo wymuszona siatka rozciągnęłaby komórkę do cienkiego
+  /// prostokąta i widok przestałby cokolwiek znaczyć.
+  ///
+  /// Operator może to nadpisać w obie strony ([setOfficialGrid]).
+  bool get officialGrid =>
+      _officialGridOverride ?? fieldMatchesOfficial(corners);
+
+  /// Czy tryb siatki wybrał się sam, czy został narzucony.
+  bool get officialGridIsAuto => _officialGridOverride == null;
+
+  /// Czy `path.txt` z tej siatki da się oddać sędziom.
+  ///
+  /// Tylko siatka 40 x 150 jest siatką scorera. W trybie kwadratów ścieżka może
+  /// mieć więcej niż 40 kolumn albo inną liczbę wierszy, więc plik jest do
+  /// debugowania, nie do oddania - i UI musi to mówić, zamiast pozwolić komuś
+  /// odkryć to przy sędziowskim stole.
+  bool get pathTxtIsSubmittable => officialGrid;
 
   bool get computing => _computing;
 
@@ -119,7 +140,9 @@ class PathState extends ChangeNotifier {
   set maxGreen(int value) => _set(() => _maxGreen = value);
   set mineInflation(int value) => _set(() => _mineInflation = value);
   set shape(GreenZoneShape value) => _set(() => _shape = value);
-  set officialGrid(bool value) => _set(() => _officialGrid = value);
+  /// ``null`` wraca do wyboru automatycznego.
+  void setOfficialGrid(bool? value) =>
+      _set(() => _officialGridOverride = value);
 
   /// Wyznacza ścieżkę. Cała robota idzie do osobnego izolatu.
   Future<void> compute() async {
@@ -141,7 +164,7 @@ class PathState extends ChangeNotifier {
         mines: mines,
         scans: scans,
         observer: observer,
-        officialGrid: _officialGrid,
+        officialGrid: officialGrid,
         params: params,
         cfg: SolverConfig(maxGreen: _maxGreen),
       );
