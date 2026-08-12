@@ -111,6 +111,7 @@ class DemoRunner extends ChangeNotifier {
     this.vertexCount = 8,
     this.radiusMeters = 5.0,
     this.lockstep = true,
+    this.lookahead = 1,
     double clearanceMeters = 4.0,
     this.settleDelay = Duration.zero,
   })  : _tracker = tracker,
@@ -141,6 +142,30 @@ class DemoRunner extends ChangeNotifier {
   ///
   /// Frozen for the duration of a run, like the figure.
   bool lockstep;
+
+  /// How many vertices may be in flight ahead of the last confirmed arrival.
+  ///
+  /// This is the smoothness dial, and it buys smoothness with the barrier.
+  ///
+  /// **0 -- strict barrier.** Nobody is sent vertex k+1 until every drone has
+  /// reported standing on k. The drone therefore has an empty command queue as
+  /// it arrives, so it decelerates to a stop, reports, and waits a radio
+  /// round-trip before it moves again. That stop is the lurch: it is not the
+  /// autopilot, it is this barrier.
+  ///
+  /// **1 or more -- pipelined.** Vertex k+1 is sent while the drone is still
+  /// flying to k, so its queue is never empty. The drone's `fly_to` sees the
+  /// queued MOVE when it reaches the arrival radius, reports `ARRIVED` for k
+  /// without waiting to decelerate, and rolls straight into the next leg. The
+  /// figure is flown as a continuous curve rather than a series of hops.
+  ///
+  /// What it costs: with N vertices in flight the app is confirming positions N
+  /// steps behind the aircraft, so two drones flying at different speeds can
+  /// drift up to N vertices apart in phase, and lockstep's separation guarantee
+  /// holds only while every drone shares a vertex index. At 1 the drift is
+  /// bounded by one leg and the anchors still dominate the geometry; beyond 2 it
+  /// stops meaning very much. The pilots are the backstop either way.
+  int lookahead;
 
   final ConflictMonitor _conflicts;
 
@@ -182,6 +207,14 @@ class DemoRunner extends ChangeNotifier {
 
   final Map<int, DemoProgress> _progress = {};
   final Map<int, DroneState> _lastState = {};
+
+  /// Newest position each drone reported in `TELEM`, whatever its phase.
+  ///
+  /// The figure is normally anchored from the opening `ARRIVED`, whose `to` IS
+  /// the anchor. That report is the single point of failure in getting a drone
+  /// into the run, so this is the second source: telemetry is unacknowledged,
+  /// repeats at 1 Hz, and a drone holding over its anchor is *at* its anchor.
+  final Map<int, LatLng> _lastPosition = {};
   final Map<int, DateTime> _lastFix = {};
   final DroneClock _clock = DroneClock();
 
@@ -192,7 +225,6 @@ class DemoRunner extends ChangeNotifier {
   final Set<int> _everAirborne = {};
 
   Timer? _settleTimer;
-  bool _escalating = false;
 
   /// False while the drones are being gathered, true once the operator has
   /// released them onto the figure.
@@ -280,6 +312,22 @@ class DemoRunner extends ChangeNotifier {
   int? _lockedVertexCount;
   double? _lockedRadius;
   bool _lockedLockstep = true;
+  int _lockedLookahead = 1;
+
+  /// Highest step index each drone has *confirmed* arriving at, -1 for none.
+  ///
+  /// Distinct from `DemoProgress.steps`, which is the newest step DISPATCHED.
+  /// With a strict barrier the two never differ by more than one and the
+  /// distinction is invisible; pipelining is exactly the act of letting them
+  /// differ, so the gap between them is what [lookahead] bounds.
+  final Map<int, int> _confirmed = {};
+
+  /// Steps dispatched to this drone but not yet confirmed arrived.
+  int inFlightFor(int droneId) {
+    final p = _progress[droneId];
+    if (p == null) return 0;
+    return p.steps - (_confirmed[droneId] ?? -1);
+  }
 
   // roundResult defaults to TRUE in latlong2, which quantises every distance
   // to whole metres -- useless when the tolerances here are 2 m wide.
@@ -324,9 +372,15 @@ class DemoRunner extends ChangeNotifier {
   /// measurement error is added on top.
   static const double minSeparationMeters = 1.5;
 
-  /// Why this formation cannot be released, or null if it can.
+  /// How tight the anchor spacing is, as text for the operator, or null if there
+  /// is nothing to say.
   ///
-  /// The check is on **anchor spacing**, and deliberately not on the figure.
+  /// **Advisory only.** This used to refuse to release the formation, and that
+  /// was wrong for the way the drones are actually flown: they are put up close
+  /// together on purpose, and the operator can see the aircraft. It now informs
+  /// and never blocks -- [beginFormation] does not consult it.
+  ///
+  /// The measurement is on **anchor spacing**, and deliberately not on the figure.
   /// Lockstep separation is geometric: identical figures translated to each
   /// drone's own anchor mean that while everyone is on the same vertex index,
   /// every pair is exactly its anchors apart -- whatever the radius, whatever the
@@ -343,7 +397,7 @@ class DemoRunner extends ChangeNotifier {
   /// because position alone could not tell vertex *k* from *k+1*, and `ARRIVED`
   /// echoing its target back settled vertex identity exactly, with no tolerance
   /// involved. Only the geometry above was ever load-bearing.
-  String? get separationFault {
+  String? get separationNotice {
     final anchors = <int, LatLng>{
       for (final e in _progress.entries)
         if (e.value.figure.isNotEmpty) e.key: _anchorOf(e.value),
@@ -400,19 +454,24 @@ class DemoRunner extends ChangeNotifier {
 
     _progress.clear();
     _lastState.clear();
+    _lastPosition.clear();
     _lastFix.clear();
     _heldSince.clear();
     _everAirborne.clear();
     _clock.clear();
     _conflicts.clear();
-    _escalating = false;
     _flying = false;
     _altitudeOverride.clear();
     _sentHome.clear();
     _landCommanded.clear();
+    _offCourse.clear();
+    _strays.clear();
+    _converging.clear();
+    _confirmed.clear();
     _lockedVertexCount = vertexCount;
     _lockedRadius = radiusMeters;
     _lockedLockstep = lockstep;
+    _lockedLookahead = lookahead < 0 ? 0 : lookahead;
 
     for (final id in drones) {
       _progress[id] = DemoProgress(droneId: id, phase: DemoPhase.starting);
@@ -474,6 +533,8 @@ class DemoRunner extends ChangeNotifier {
       if (joining) _altitudeOverride[id] = altitude;
       _sentHome.remove(id);
       _landCommanded.remove(id);
+      _strays.remove(id);
+      _confirmed.remove(id);
     }
     logInfo(
         joining
@@ -508,24 +569,130 @@ class DemoRunner extends ChangeNotifier {
     return null;
   }
 
-  /// An aircraft we have no phase relationship with, airborne near the figure.
+  /// Credit this drone with reaching the vertex it was sent to, on the
+  /// operator's word rather than on an `ARRIVED`.
   ///
-  /// Sent home at [transitAltitude], which the drone reaches *in place* before it
-  /// translates. That ordering is the whole safety argument: it leaves the height
-  /// the formation is using before it crosses their circles, which is exactly what
-  /// made a plain `RTH` unusable as an abort.
+  /// The per-drone counterpart to [forceNextStep], and the one to reach for
+  /// first. An arrival report goes missing often enough to matter -- it is the
+  /// one message the whole barrier hangs on -- and when it does, the choice used
+  /// to be between leaving the formation frozen and stepping *everybody*, which
+  /// puts the drones that had not arrived a vertex out of phase. This releases
+  /// only the drone the operator can see standing on its vertex, so the barrier
+  /// clears with the lockstep guarantee intact.
   ///
-  /// Once per stray -- `ARRIVED` is retried until acknowledged, so without this
-  /// every repeat would fire another `RTH`.
-  void _sendStrayHome(int droneId) {
-    if (!_sentHome.add(droneId)) return;
-    final alt = transitAltitude;
-    logError('Drone $droneId is airborne but has no place in this formation - '
-        'sending it home at ${alt.toStringAsFixed(1)}m, clear of the '
-        '${_altitude.toStringAsFixed(1)}m the others are using', _tag);
-    unawaited(_tracker.send((q) => RthMessage(seq: q, altitude: alt),
-        dest: droneId));
+  /// It asserts nothing about position: the operator is looking at the aircraft,
+  /// which is a better instrument than a report that never came.
+  String? markArrived(int droneId) {
+    var p = _progress[droneId];
+    if (p == null || !p.isActive) return 'drone $droneId is not in this run';
+    if (p.isWaiting) return 'drone $droneId has already reported arriving';
+
+    if (p.figure.isEmpty) {
+      // No anchor yet, because the opening `ARRIVED` never arrived. That report
+      // is normally the only thing that carries the anchor, and losing it used
+      // to be unrecoverable: the drone was up and holding, the operator could
+      // see it, and there was no way to say so.
+      //
+      // Telemetry is the way out. It is unacknowledged, repeats at 1 Hz, and a
+      // drone that is up and holding is sitting ON the anchor its figure should
+      // be laid around -- so its last reported position is the same coordinate
+      // the missing report would have carried. Anchoring from it is exactly what
+      // the operator is asserting by pressing the button.
+      final here = _lastPosition[droneId];
+      if (here == null) {
+        // Nothing has ever been heard from this drone -- no ARRIVED, no TELEM.
+        // There is no position to anchor on and none to invent.
+        return 'drone $droneId has not reported at all - no position to '
+            'anchor its figure on';
+      }
+      final n = _lockedVertexCount ?? vertexCount;
+      final r = _lockedRadius ?? radiusMeters;
+      p = p.copyWith(
+        figure: [for (var i = 0; i < n; i++) offsetLatLng(here, i * 360.0 / n, r)],
+      );
+      _progress[droneId] = p;
+      logWarn('Drone $droneId anchored at ${here.latitude},${here.longitude} '
+          'from TELEM on the operator\'s word - its arrival report never came',
+          _tag);
+      _tracker.dismissFailure(droneId);
+    }
+
+    _everAirborne.add(droneId);
+    _lastFix[droneId] = DateTime.now();
+    _offCourse.remove(droneId);
+
+    final where = p.phase == DemoPhase.starting
+        ? 'airborne and holding (operator)'
+        : 'on vertex ${p.steps % p.figure.length} (operator)';
+    logWarn('Operator marked drone $droneId as arrived without a report - '
+        '$where', _tag);
+    _reachBarrier(droneId, p, where);
+    return null;
   }
+
+  /// Land this one drone, at the operator's request.
+  ///
+  /// Routed through the runner rather than sent straight from [AppState] so the
+  /// formation is told: a drone coming down must stop holding the barrier, or
+  /// everybody else waits at their vertex for an aircraft that is on the ground.
+  String? landDrone(int droneId) {
+    final p = _progress[droneId];
+    if (p == null || !p.isActive) {
+      // Not ours to account for, so just send it. A drone outside the run still
+      // has to be landable from the same button.
+      logWarn('Operator LAND for drone $droneId, which is not in this run - '
+          'sending it anyway', _tag);
+      _landCommanded.add(droneId);
+      unawaited(_tracker.send((q) => LandMessage(seq: q), dest: droneId));
+      return null;
+    }
+    _landInPlace(droneId, 'operator sent LAND');
+    return null;
+  }
+
+  /// Send this one drone home, at the operator's request.
+  ///
+  /// At [transitAltitude], never the formation's: `RTH` translates horizontally,
+  /// so a return at the shared height would fly it across everybody else's
+  /// circle. The drone reaches the transit height in place before it moves,
+  /// which is what makes that safe -- the same argument as [_sendStrayHome].
+  ///
+  /// The drone is dropped from the formation, not landed: it is leaving under
+  /// its own command and the barrier must not wait for it.
+  String? returnDroneHome(int droneId) {
+    final alt = transitAltitude;
+    final p = _progress[droneId];
+    if (p != null && p.isActive) {
+      _dropFromFormation(droneId, 'operator sent RTH',
+          'Drone $droneId sent home by the operator at '
+          '${alt.toStringAsFixed(1)}m');
+    } else {
+      logWarn('Operator RTH for drone $droneId at ${alt.toStringAsFixed(1)}m',
+          _tag);
+    }
+    _sentHome.add(droneId);   // so a late ARRIVED does not fire a second RTH
+    _offCourse.remove(droneId);
+    unawaited(
+        _tracker.send((q) => RthMessage(seq: q, altitude: alt), dest: droneId));
+    return null;
+  }
+
+  /// Aircraft the app has seen airborne with no place in the formation, so each
+  /// is mentioned once rather than on every retried report.
+  ///
+  /// They used to be flown home automatically. Nothing does that now: an
+  /// aircraft the app cannot account for is the one it has least business
+  /// commanding, and the pilots are watching.
+  final Set<int> _strays = {};
+
+  /// Drones reported airborne with no place in this formation.
+  Iterable<int> get strays => _strays;
+
+  /// Drones currently predicted to breach clearance with somebody, off-step.
+  /// Advisory: nothing acts on it.
+  final Set<int> _converging = {};
+
+  bool isConverging(int droneId) => _converging.contains(droneId);
 
   void stop() {
     var changed = false;
@@ -546,6 +713,7 @@ class DemoRunner extends ChangeNotifier {
     if (_progress.isEmpty) return;
     _progress.clear();
     _lastState.clear();
+    _lastPosition.clear();
     _lastFix.clear();
     _heldSince.clear();
     _clock.clear();
@@ -554,6 +722,10 @@ class DemoRunner extends ChangeNotifier {
     _altitudeOverride.clear();
     _sentHome.clear();
     _landCommanded.clear();
+    _offCourse.clear();
+    _strays.clear();
+    _converging.clear();
+    _confirmed.clear();
     _settleTimer?.cancel();
     _settleTimer = null;
     notifyListeners();
@@ -601,6 +773,9 @@ class DemoRunner extends ChangeNotifier {
     _clock.observe(droneId, telemetry, now);
 
     _lastState[droneId] = telemetry.state;
+    // Kept for every drone, in flight or not: it is the fallback anchor when the
+    // opening ARRIVED never turns up. See [markArrived].
+    _lastPosition[droneId] = telemetry.position;
 
     final p = _progress[droneId];
     if (p == null || !p.isActive) return;
@@ -641,19 +816,35 @@ class DemoRunner extends ChangeNotifier {
     }
 
     // Off-step, separation IS this measurement, so a fresh position is exactly
-    // when the answer can change. Both of a converging pair come down: at this
-    // fix quality nothing says which one is the mover, and guessing wrong does
-    // not degrade gracefully.
+    // when the answer can change.
+    //
+    // Reported, never acted on. Both of a converging pair used to be landed here
+    // -- at this fix quality nothing says which one is the mover, so it had to be
+    // both -- and that meant one optimistic extrapolation took two healthy
+    // aircraft out of the display. The step that would have caused the
+    // convergence is still refused before it is sent ([_releaseIndependently]),
+    // which is the cheap, reversible half of the check; this half is now the
+    // operator's warning, with the pilots as the backstop.
     if (!_lockedLockstep && _flying) {
-      for (final conflict in _conflicts.conflicts(_formation)) {
+      final conflicts = _conflicts.conflicts(_formation);
+      final converging = <int>{};
+      for (final conflict in conflicts) {
+        converging..add(conflict.a)..add(conflict.b);
         final gap = conflict.separationMeters.toStringAsFixed(1);
-        final limit = clearanceMeters.toStringAsFixed(1);
-        _landInPlace(conflict.a,
-            'predicted ${gap}m from drone ${conflict.b}, clearance ${limit}m');
-        _landInPlace(conflict.b,
-            'predicted ${gap}m from drone ${conflict.a}, clearance ${limit}m');
+        if (_converging.contains(conflict.a) &&
+            _converging.contains(conflict.b)) {
+          continue;   // already shouted about this pair
+        }
+        logError('Drones ${conflict.a} and ${conflict.b} predicted to close to '
+            '${gap}m, under the ${clearanceMeters.toStringAsFixed(1)}m '
+            'clearance - NOT landing them. Watch them.', _tag);
       }
-      if (_progress[droneId]?.isActive != true) return;
+      if (!setEquals(_converging, converging)) {
+        _converging
+          ..clear()
+          ..addAll(converging);
+        notifyListeners();
+      }
     }
 
     // Corroboration only: the formation steps on ARRIVED, never on this. A
@@ -689,10 +880,11 @@ class DemoRunner extends ChangeNotifier {
     // had written it off -- but the anchor is not lost with it: the opening
     // report's `to` IS the anchor. So adopt it and let it join the muster.
     //
-    // Only while mustering. Adopting into a moving figure would put a drone over
-    // its anchor while the rest are on vertex k, and the next step would send it
-    // to k+1 from the wrong place. Left alone it hovers where it is, which is the
-    // safe outcome and the one a pilot can act on.
+    // An *uninvited* drone is only adopted while mustering. Adopting one into a
+    // moving figure would put it over its anchor while the rest are on vertex k,
+    // and the next step would send it to k+1 from the wrong place. Left alone it
+    // hovers where it is, which is the safe outcome and the one a pilot can act
+    // on.
     if (p == null || !p.isActive || p.figure.isEmpty) {
       // Checked FIRST, before anything can be sent. On 2026-08-11 this guard sat
       // below the `_flying` branch and so was unreachable in flight: the app
@@ -706,8 +898,31 @@ class DemoRunner extends ChangeNotifier {
             _tag);
         return;
       }
-      if (!isRunning || _flying) {
-        _sendStrayHome(droneId);
+
+      // Did we ask for this drone? [addDrones] enters a joiner as `starting`
+      // with no figure, because the anchor is not known until this very report
+      // arrives -- so an invited joiner is indistinguishable from a stray by
+      // figure alone, and must be told apart by its `_progress` entry.
+      //
+      // Without this an invited joiner was strayed home by the `_flying` test
+      // below, which is the whole of what "join the formation" did: on
+      // 2026-08-12 a drone was started as a joiner at the transit altitude,
+      // climbed, sent its opening ARRIVED, and was answered 0.7 s later with an
+      // RTH that flew it straight back down. The `_flying` rule was written when
+      // joining a moving figure was not a thing the app could do.
+      final invited = p != null && p.isActive;
+
+      if (!invited && (!isRunning || _flying)) {
+        // Reported, not acted on. This used to answer with `RTH`, which is the
+        // app flying an aircraft it has explicitly just said it knows nothing
+        // about -- and it fired on any drone whose START_DEMO ACK went missing.
+        // A drone the app has no place for is the pilot's, not ours.
+        if (_strays.add(droneId)) {
+          logWarn('Drone $droneId is airborne with no place in this formation. '
+              'Leaving it alone - it is the pilot\'s. Restart it to bring it in.',
+              _tag);
+          notifyListeners();
+        }
         return;
       }
       final anchor = arrived.target;
@@ -719,8 +934,15 @@ class DemoRunner extends ChangeNotifier {
         figure: [for (var i = 0; i < n; i++) offsetLatLng(anchor, i * 360.0 / n, r)],
       );
       _progress[droneId] = p;
-      logInfo('Drone $droneId adopted into the muster from its own arrival '
-          'report - anchored at ${anchor.latitude},${anchor.longitude}', _tag);
+      logInfo(
+          invited
+              ? 'Drone $droneId anchored at ${anchor.latitude},'
+                  '${anchor.longitude} from its opening arrival report - '
+                  'joining the figure at '
+                  '${(_altitudeOverride[droneId] ?? _altitude).toStringAsFixed(1)}m'
+              : 'Drone $droneId adopted into the muster from its own arrival '
+                  'report - anchored at ${anchor.latitude},${anchor.longitude}',
+          _tag);
       _tracker.dismissFailure(droneId);
     }
 
@@ -749,44 +971,99 @@ class DemoRunner extends ChangeNotifier {
       return;
     }
 
-    final expected = p.targetIn(p.figure);
-    if (expected == null) return;
-    final vertex = p.steps % p.figure.length;
+    if (p.steps < 0 || p.figure.isEmpty) return;
 
-    final drift = _distance(arrived.target, expected);
-    if (drift > _targetMatchMeters) {
-      // A report naming the step we have just credited is our own lost ACK
-      // coming back, not a drone that flew backwards: it is retried until
-      // acknowledged, so repeats are ordinary traffic rather than a fault.
-      // [AppState] drops them earlier, but this must not be the only thing
-      // standing between a routine retransmission and a landed drone -- that
-      // dedup is keyed on a sequence number the drone resets when it restarts.
-      final previous = p.steps > 0
-          ? p.figure[(p.steps - 1) % p.figure.length]
-          : null;
-      if (previous != null &&
-          _distance(arrived.target, previous) <= _targetMatchMeters) {
-        logTrace(_tag, 'drone $droneId re-reported vertex '
-            '${(p.steps - 1) % p.figure.length} - already credited, ignoring');
+    // Which of the steps we have sent is this report about?
+    //
+    // Under a strict barrier there is only ever one candidate -- the step in
+    // flight -- and this collapses to the old equality check. Pipelined there
+    // are up to `lookahead + 1` of them outstanding at once, and the report for
+    // vertex k routinely arrives AFTER we have already sent k+1. Matching only
+    // against the newest step would then reject every arrival we get, so the
+    // whole window from the last confirmation to the newest dispatch is
+    // searched, newest first.
+    //
+    // The coordinate is ours, echoed back at the 7 decimal places the wire
+    // carries, so a match is exact to about a centimetre and there is no
+    // ambiguity to resolve between neighbouring vertices.
+    final firstOpen = (_confirmed[droneId] ?? -1) + 1;
+    int? matched;
+    for (var s = p.steps; s >= firstOpen; s--) {
+      if (_distance(arrived.target, p.figure[s % p.figure.length]) <=
+          _targetMatchMeters) {
+        matched = s;
+        break;
+      }
+    }
+
+    if (matched == null) {
+      // Already credited, or never sent. A report naming a step behind the
+      // window is our own lost ACK coming back -- ARRIVED is retried until
+      // acknowledged, so repeats are ordinary traffic and not a fault.
+      final credited = _confirmed[droneId] ?? -1;
+      final isRepeat = credited >= 0 &&
+          _distance(arrived.target, p.figure[credited % p.figure.length]) <=
+              _targetMatchMeters;
+      if (isRepeat) {
+        logTrace(_tag,
+            'drone $droneId re-reported vertex ${credited % p.figure.length} - '
+            'already credited, ignoring');
         return;
       }
-      _landInPlace(droneId,
-          'reported arriving somewhere it was not sent: '
-          '${drift.toStringAsFixed(1)}m from vertex $vertex');
+      logWarn('Drone $droneId reported arriving somewhere it was not sent '
+          '(no match in steps $firstOpen..${p.steps}). Ignoring the report, '
+          'leaving the drone alone.', _tag);
       return;
     }
 
-    final off = _distance(arrived.at, expected);
+    final vertex = matched % p.figure.length;
+    final off = _distance(arrived.at, p.figure[vertex]);
     if (off > arrivalToleranceMeters) {
-      _landInPlace(droneId,
-          'stopped ${off.toStringAsFixed(1)}m off vertex $vertex');
-      return;
+      // Credited anyway. The drone flew to the vertex we named and says it
+      // stopped there; that it stopped wide is worth knowing and is not worth
+      // grounding an aircraft over.
+      logWarn('Drone $droneId stopped ${off.toStringAsFixed(1)}m off vertex '
+          '$vertex (tolerance ${arrivalToleranceMeters.toStringAsFixed(1)}m) - '
+          'crediting it anyway, NOT landing it', _tag);
     }
-    _reachBarrier(droneId, p, 'on vertex $vertex');
+    _confirmArrival(droneId, p, matched,
+        off > arrivalToleranceMeters
+            ? 'vertex $vertex (${off.toStringAsFixed(1)}m off)'
+            : 'vertex $vertex');
+  }
+
+  /// Credit [step] as reached, and let the formation move on.
+  ///
+  /// The drone only goes to `holding` if this was the LAST step it was sent.
+  /// Pipelined it usually is not: the aircraft confirmed vertex k while already
+  /// flying to k+1, so it never stops and must not be shown as though it had.
+  void _confirmArrival(int droneId, DemoProgress p, int step, String where) {
+    _confirmed[droneId] = step;
+    _offCourse.remove(droneId);
+
+    final stillFlying = step < p.steps;
+    if (stillFlying) {
+      _progress[droneId] =
+          p.copyWith(detail: 'passed $where, on to ${p.steps % p.figure.length}');
+      logInfo('Drone $droneId passed $where without stopping '
+          '(flying to vertex ${p.steps % p.figure.length})', _tag);
+    } else {
+      _progress[droneId] = p.copyWith(phase: DemoPhase.holding, detail: where);
+      _heldSince[droneId] = DateTime.now();
+      _conflicts.setTarget(droneId, null);   // parked, not going anywhere
+      logInfo('Drone $droneId holding ($where)', _tag);
+    }
+    notifyListeners();
+    _releaseBarrier();
   }
 
   /// A drone has reached the vertex it was sent to and is now standing still.
+  ///
+  /// Only for arrivals with no step behind them -- the opening "airborne and
+  /// holding", and the operator's [markArrived]. Ordinary vertex arrivals go
+  /// through [_confirmArrival], which knows about pipelining.
   void _reachBarrier(int droneId, DemoProgress p, String why) {
+    if (p.steps >= 0) _confirmed[droneId] = p.steps;
     _progress[droneId] = p.copyWith(phase: DemoPhase.holding, detail: why);
     _heldSince[droneId] = DateTime.now();
     _conflicts.setTarget(droneId, null);   // parked, so it is not going anywhere
@@ -814,11 +1091,12 @@ class DemoRunner extends ChangeNotifier {
     final ready = mustered.toList();
     if (ready.isEmpty) return 'no drone is airborne and holding yet';
 
-    final fault = separationFault;
-    if (fault != null) {
-      logError('Formation not released: $fault', _tag);
-      return fault;
-    }
+    // Anchor spacing is reported, not enforced. It used to refuse the release,
+    // and on 2026-08-11 that stopped a run where both drones were already in the
+    // air: they are deliberately put up close together, and 4 m of "worst case"
+    // arithmetic is not a better judge of that than the operator watching them.
+    final notice = separationNotice;
+    if (notice != null) logWarn('Releasing anyway: $notice', _tag);
 
     // Whoever has not made it up is not coming with us. Dropped here, at the
     // operator's explicit go-ahead, so the barrier is not left waiting for a
@@ -875,7 +1153,19 @@ class DemoRunner extends ChangeNotifier {
     return null;
   }
 
-  /// Lockstep: step the whole formation, but only once every drone is still.
+  /// Lockstep: keep every drone supplied with vertices, in step with the rest.
+  ///
+  /// The rule is one line: **the formation may be dispatched up to
+  /// `slowest confirmed arrival + 1 + lookahead`.** Everything else falls out of
+  /// it.
+  ///
+  /// At `lookahead == 0` that is `minConfirmed + 1`, which is precisely the old
+  /// barrier -- nothing is sent until the slowest drone has reported the current
+  /// vertex. Above zero it lets each drone hold that many un-confirmed vertices
+  /// in its queue, which is what stops it decelerating on every corner, while
+  /// still pinning the whole formation to the SLOWEST drone's confirmed
+  /// progress. A drone that stops reporting still halts the figure within
+  /// `lookahead` steps rather than running away with it.
   void _releaseLockstep() {
     // A drone still climbing is not in the figure yet, so it neither holds the
     // barrier nor counts as late for one. Without this a mid-flight joiner would
@@ -883,47 +1173,85 @@ class DemoRunner extends ChangeNotifier {
     // the offset altitude exists to avoid.
     final formation = _inFigure.toList();
     if (formation.isEmpty) return;
-    if (!formation.every((id) => _progress[id]!.isWaiting)) return;
 
-    // The formation leaves together, so it leaves when the last one to arrive
-    // has settled.
-    final wait = formation
-        .map(_settleRemaining)
-        .reduce((a, b) => a > b ? a : b);
-    if (wait > Duration.zero) {
-      _scheduleSettle(wait);
-      return;
+    final minConfirmed = formation
+        .map((id) => _confirmed[id] ?? -1)
+        .reduce((a, b) => a < b ? a : b);
+    final ceiling = minConfirmed + 1 + _lockedLookahead;
+
+    // Only drones that are actually standing still need to settle. Pipelined,
+    // the drone is still moving when it reports, so there is nothing to settle
+    // and waiting would reintroduce the stop this exists to remove.
+    final holding = formation.where((id) => _progress[id]!.isWaiting).toList();
+    if (holding.isNotEmpty) {
+      final wait =
+          holding.map(_settleRemaining).reduce((a, b) => a > b ? a : b);
+      if (wait > Duration.zero) {
+        _scheduleSettle(wait);
+        return;
+      }
     }
 
-    _stepFormation(formation);
+    // Sequential, never skipping: a drone is only ever sent the vertex after the
+    // one it was last sent. Its queue keeps them in order, and the drone rejects
+    // any that arrive out of order (`_seq_is_newer` in link.py).
+    //
+    // Looped, so the pipeline is filled to the ceiling in one go rather than one
+    // vertex per arrival. It matters most at the very start: a single pass would
+    // send only vertex 0 at release, leaving the queue empty for the first leg,
+    // and the drone would stop on the first corner before the pipeline caught
+    // up. Terminates because every pass advances at least one drone's `steps`
+    // toward a ceiling that does not move inside this call.
+    while (true) {
+      final due = formation
+          .where((id) => _progress[id]!.steps + 1 <= ceiling)
+          .toList();
+      if (due.isEmpty) return;
+      _stepFormation(due);
+    }
   }
 
-  /// Send one vertex to the whole formation.
+  /// Send the next vertex to each of these drones.
   ///
-  /// [forced] only changes the wording: the drones cannot tell, and neither can
-  /// the geometry.
+  /// Each gets *its own* `steps + 1` rather than one shared index. Under a strict
+  /// barrier that is the same number for everybody, so nothing changes; pipelined
+  /// it is what stops a drone being skipped past a vertex it has not been sent
+  /// yet, because the queue on the aircraft only preserves the order we send in.
+  ///
+  /// [forced] is the exception: it levels everyone up to the furthest-along
+  /// drone's next index, which is the entire point of the button -- a drone that
+  /// missed a step is caught up rather than left behind.
   void _stepFormation(List<int> formation, {bool forced = false}) {
-    // The index every drone shares. Taken from the furthest along when forced,
-    // so a drone that missed a step is caught up rather than left behind -- it is
-    // the whole point of the button.
-    final base = formation
+    final furthest = formation
         .map((id) => _progress[id]!.steps)
         .reduce((a, b) => a > b ? a : b);
-    final steps = base + 1;
 
-    if (steps >= maxSteps) {
-      logWarn('Formation hit the $maxSteps-step cap - landing', _tag);
+    if (furthest + 1 >= maxSteps) {
+      // Stop stepping, do not land. The cap is a runaway guard on this app's own
+      // loop, not a statement about the aircraft, and the drones are hovering
+      // safely on their vertices when it trips.
+      logWarn('Formation hit the $maxSteps-step cap - holding position. '
+          'Stop the demo or land the drones from the Demo tab.', _tag);
       for (final id in formation) {
-        _landInPlace(id, 'step cap reached');
+        final p = _progress[id]!;
+        _progress[id] = p.copyWith(detail: 'step cap reached - holding');
       }
+      notifyListeners();
       return;
     }
 
+    final sent = <int>[];
     for (final id in formation) {
+      final steps = forced ? furthest + 1 : _progress[id]!.steps + 1;
       _dispatch(id, steps);
+      sent.add(steps % (_lockedVertexCount ?? vertexCount));
     }
-    logInfo('Formation -> vertex ${steps % vertexCount} '
-        '(${formation.length} drone(s))${forced ? " [forced]" : ""}', _tag);
+    final vertices = sent.toSet().toList()..sort();
+    logInfo(
+        'Formation -> vertex ${vertices.join("/")} '
+        '(${formation.length} drone(s))${forced ? " [forced]" : ""}'
+        '${_lockedLookahead > 0 && !forced ? " [pipelined]" : ""}',
+        _tag);
     notifyListeners();
   }
 
@@ -937,17 +1265,32 @@ class DemoRunner extends ChangeNotifier {
     var soonest = Duration.zero;
     for (final id in _formation.toList()) {
       final p = _progress[id]!;
-      if (!p.isWaiting) continue;
+      // Off-step there is no formation to stay level with, so a drone may be
+      // topped up whenever it has fewer than `lookahead` legs outstanding --
+      // that is what keeps its queue non-empty and its motion continuous. With
+      // lookahead 0 this is the old rule: step only a drone that is standing
+      // still, having reported.
+      final outstanding = p.steps - (_confirmed[id] ?? -1);
+      if (outstanding > _lockedLookahead) continue;
+      if (!p.isWaiting && _lockedLookahead == 0) continue;
 
-      final wait = _settleRemaining(id);
-      if (wait > Duration.zero) {
-        if (soonest == Duration.zero || wait < soonest) soonest = wait;
-        continue;
+      // Only a drone that is actually parked has anything to settle.
+      if (p.isWaiting) {
+        final wait = _settleRemaining(id);
+        if (wait > Duration.zero) {
+          if (soonest == Duration.zero || wait < soonest) soonest = wait;
+          continue;
+        }
       }
 
       final steps = p.steps + 1;
       if (steps >= maxSteps) {
-        _landInPlace(id, 'step cap reached');
+        // Holds, never lands -- see [_stepFormation].
+        if (p.detail != 'step cap reached - holding') {
+          _progress[id] = p.copyWith(detail: 'step cap reached - holding');
+          logWarn('Drone $id hit the $maxSteps-step cap - holding position', _tag);
+          moved = true;
+        }
         continue;
       }
       if (p.figure.isEmpty) {
@@ -1015,6 +1358,7 @@ class DemoRunner extends ChangeNotifier {
     final target = p.figure[vertex];
 
     _heldSince.remove(droneId);
+    _offCourse.remove(droneId);   // new leg, so the old excursion is spent
     _conflicts.setTarget(droneId, target);
     _progress[droneId] = p.copyWith(
         phase: DemoPhase.stepping, steps: steps, detail: 'to vertex $vertex');
@@ -1031,6 +1375,16 @@ class DemoRunner extends ChangeNotifier {
   }
 
   /// Still somewhere it could plausibly be, given the leg it was sent on?
+  ///
+  /// Reports and does not act. This used to land the drone, and the judgement
+  /// was wrong often enough to be dangerous: a drone joining a figure that is
+  /// already moving is legitimately most of a leg away from the vertex it is
+  /// walking to, so on 2026-08-11 a healthy joiner measured itself 7 m out and
+  /// put itself on the ground mid-catch-up. Being out of position is not by
+  /// itself a reason to come down -- the joiner is a metre off the formation's
+  /// altitude the whole time it is out there ([_altitudeOverride]), so it is
+  /// separated from everybody regardless of where it is horizontally. The
+  /// operator can see the aircraft and has [landDrone] if it needs to come down.
   void _checkOnCourse(int droneId, DemoProgress p, LatLng position) {
     final target = p.targetIn(p.figure);
     if (target == null) return;
@@ -1038,12 +1392,34 @@ class DemoRunner extends ChangeNotifier {
         ? segmentMeters + arrivalToleranceMeters
         : arrivalToleranceMeters;
     final off = _distance(position, target);
-    if (off > limit) {
-      _landInPlace(droneId,
-          '${off.toStringAsFixed(1)}m from vertex ${p.steps % p.figure.length}, '
-          'limit ${limit.toStringAsFixed(1)}m');
+
+    if (off <= limit) {
+      // Back where it should be: drop the flag so a later excursion is reported
+      // afresh rather than swallowed as "already known".
+      if (_offCourse.remove(droneId)) {
+        logInfo('Drone $droneId back on course '
+            '(${off.toStringAsFixed(1)}m from its vertex)', _tag);
+        notifyListeners();
+      }
+      return;
     }
+
+    // Telemetry is 1 Hz, so log the excursion once rather than every frame.
+    if (!_offCourse.add(droneId)) return;
+    logError(
+        'Drone $droneId is ${off.toStringAsFixed(1)}m from vertex '
+        '${p.steps % p.figure.length} (limit ${limit.toStringAsFixed(1)}m) - '
+        'reporting only, NOT landing it',
+        _tag);
+    notifyListeners();
   }
+
+  /// Drones currently measured off their leg, so the excursion is logged once.
+  final Set<int> _offCourse = {};
+
+  /// Whether this drone is currently further off its leg than [_checkOnCourse]
+  /// expects. Advisory: nothing acts on it.
+  bool isOffCourse(int droneId) => _offCourse.contains(droneId);
 
   /// Watchdog: catches the failures that produce no message at all.
   void _onFailed(AckFailure failure) {
@@ -1063,9 +1439,13 @@ class DemoRunner extends ChangeNotifier {
         _tracker.dismissFailure(failure.droneId);
         return;
       }
-      // Unreachable and still at the formation's altitude, so nothing is
-      // guaranteed for anyone: everybody comes down.
-      _escalate(failure.droneId, failure.description);
+      // A LAND that did not land it. Worth shouting about, but it no longer
+      // brings the rest of the formation down with it: landing three healthy
+      // aircraft because a fourth refused one message is a bigger event than the
+      // one it is trying to prevent, and the pilots can see all four.
+      logError('Drone ${failure.droneId} did not take LAND '
+          '(${failure.description}). It may still be at the formation altitude - '
+          'the rest are being left up. Take it manually.', _tag);
       return;
     }
     if (!p.isActive) return;
@@ -1094,11 +1474,10 @@ class DemoRunner extends ChangeNotifier {
     // it can hear us -- so it comes down. A refused write is this phone's own
     // transport failing, which says nothing about the aircraft, so the drone is
     // dropped from the formation and left flying.
-    if (failure.kind == AckFailureKind.rejected) {
-      _landInPlace(failure.droneId, failure.description);
-      return;
-    }
-
+    // A NACK used to land the drone here. It no longer does: the drone refusing
+    // a step is a drone that is NOT flying anywhere, hovering where it already
+    // was, which is the safe state. It leaves the formation so the barrier stops
+    // waiting for it, and stays up for its pilot.
     _dropFromFormation(failure.droneId, failure.description,
         'Drone ${failure.droneId}: ${failure.description}');
   }
@@ -1167,23 +1546,6 @@ class DemoRunner extends ChangeNotifier {
 
     // Whoever is left must not wait at a barrier for a drone that has gone.
     _releaseBarrier();
-  }
-
-  /// A `LAND` the drone refused, for a drone still in everybody else's airspace.
-  ///
-  /// Only a NACK or a refused write can get here now -- silence cannot, because
-  /// nothing waits for an ACK. So this is the drone actively declining to come
-  /// down while sitting at the shared altitude, which is the one case where the
-  /// rest of the formation is at risk from a single aircraft.
-  void _escalate(int droneId, String reason) {
-    if (_escalating) return;
-    _escalating = true;
-    logError('Drone $droneId refused to land ($reason) - landing the '
-        'whole formation', _tag);
-    for (final id in _formation.toList()) {
-      _landInPlace(id, 'formation abort: drone $droneId is unreachable');
-    }
-    notifyListeners();
   }
 
   void _finishIfIdle() {

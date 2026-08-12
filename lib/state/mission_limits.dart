@@ -30,4 +30,14 @@ const demoClearanceRange = NumberRange(min: 1.0, max: 20.0, step: 0.5);
 /// the next step is sent. Zero is a legitimate setting -- it is how the demo
 /// flew before the pause existed -- so this range starts there.
 const demoSettleRange = NumberRange(min: 0.0, max: 10.0, step: 0.5);
+
+/// Vertices allowed in flight ahead of the slowest confirmed arrival.
+///
+/// 0 is the strict barrier -- every drone confirms a vertex before anyone is
+/// sent the next -- which is also what makes the drones stop dead on each
+/// corner. 1 keeps their command queues one leg deep, so they fly the figure
+/// continuously. The ceiling is low on purpose: each extra vertex in flight is
+/// another leg the app is confirming behind the aircraft, and past 2 the phase
+/// relationship the whole formation rests on stops meaning anything.
+const demoLookaheadRange = NumberRange(min: 0, max: 3, step: 1);
 const mainAltitudeRange = NumberRange(min: 0.5, max: 30.0, step: 0.5);

@@ -15,6 +15,7 @@ import 'screens/path_tab.dart';
 import 'screens/esp_data_tab.dart';
 import 'screens/inputs_tab.dart';
 import 'screens/mission_tab.dart';
+import 'screens/demo_tab.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -79,6 +80,7 @@ class _HomeTabsState extends State<HomeTabs> {
 
   static const _pages = <Widget>[
     MissionTab(),
+    DemoTab(),
     MapTab(),
     InputsTab(),
     LogsTab(),
@@ -91,6 +93,11 @@ class _HomeTabsState extends State<HomeTabs> {
       icon: Icon(Icons.rocket_launch_outlined),
       selectedIcon: Icon(Icons.rocket_launch),
       label: 'Mission',
+    ),
+    NavigationDestination(
+      icon: Icon(Icons.change_history_outlined),
+      selectedIcon: Icon(Icons.change_history),
+      label: 'Demo',
     ),
     NavigationDestination(icon: Icon(Icons.map_outlined), label: 'Map'),
     NavigationDestination(icon: Icon(Icons.edit_location_alt), label: 'Field'),

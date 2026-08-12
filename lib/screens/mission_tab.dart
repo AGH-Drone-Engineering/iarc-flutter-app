@@ -279,6 +279,7 @@ class _FleetCell extends StatelessWidget {
   }
 }
 
+/// The main search mission. The demo lives on its own tab.
 class _MissionStartSection extends StatelessWidget {
   const _MissionStartSection();
 
@@ -289,170 +290,10 @@ class _MissionStartSection extends StatelessWidget {
     final cornerCount = app.filledCorners.length;
 
     return SectionCard(
-      title: 'Start mission',
+      title: 'Start main mission',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          NumberStepper(
-            label: 'Demo hover altitude',
-            value: app.demoAltitude,
-            min: demoAltitudeRange.min,
-            max: demoAltitudeRange.max,
-            step: demoAltitudeRange.step,
-            unit: 'm',
-            onChanged: app.setDemoAltitude,
-          ),
-          const SizedBox(height: 8),
-          NumberStepper(
-            label: 'Figure vertices',
-            value: app.demoVertices.toDouble(),
-            min: demoVerticesRange.min,
-            max: demoVerticesRange.max,
-            step: demoVerticesRange.step,
-            unit: '',
-            onChanged: app.setDemoVertices,
-          ),
-          const SizedBox(height: 8),
-          NumberStepper(
-            label: 'Figure radius',
-            value: app.demoRadius,
-            min: demoRadiusRange.min,
-            max: demoRadiusRange.max,
-            step: demoRadiusRange.step,
-            unit: 'm',
-            onChanged: app.setDemoRadius,
-          ),
-          const SizedBox(height: 8),
-          NumberStepper(
-            label: 'Settle on vertex',
-            value: app.demoSettleSeconds,
-            min: demoSettleRange.min,
-            max: demoSettleRange.max,
-            step: demoSettleRange.step,
-            unit: 's',
-            onChanged: app.setDemoSettle,
-          ),
-          const Divider(height: 24),
-          SwitchListTile.adaptive(
-            contentPadding: EdgeInsets.zero,
-            dense: true,
-            title: const Text('Lockstep formation'),
-            subtitle: Text(
-              app.demoLockstep
-                  ? 'All drones step together'
-                  : 'Independent, collision-checked',
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
-            value: app.demoLockstep,
-            onChanged: app.demo.isRunning
-                ? null
-                : (v) => app.setDemoLockstep(v),
-          ),
-          if (!app.demoLockstep) ...[
-            const SizedBox(height: 4),
-            NumberStepper(
-              label: 'Clearance',
-              value: app.demoClearance,
-              min: demoClearanceRange.min,
-              max: demoClearanceRange.max,
-              step: demoClearanceRange.step,
-              unit: 'm',
-              onChanged: app.setDemoClearance,
-            ),
-            const SizedBox(height: 4),
-            Text(
-              app.worstReportedAccuracy == null
-                  ? 'no fix accuracy reported'
-                  : 'worst fix '
-                      '±${app.worstReportedAccuracy!.toStringAsFixed(1)} m',
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Theme.of(context).colorScheme.primary,
-                  ),
-            ),
-          ],
-          const SizedBox(height: 8),
-          if (app.demo.isRunning) ...[
-            _MusterRoster(app: app),
-            const SizedBox(height: 8),
-            if (app.demo.isMustering)
-              Builder(builder: (context) {
-                final fault = app.demo.separationFault;
-                return Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    if (fault != null)
-                      _Warning(text: fault),
-                    FilledButton.icon(
-                      onPressed: app.demo.mustered.isEmpty || fault != null
-                          ? null
-                          : () {
-                              final refusal = app.beginFormation();
-                              if (refusal != null && context.mounted) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                    SnackBar(content: Text(refusal)));
-                              }
-                            },
-                      icon: const Icon(Icons.play_arrow),
-                      label: Text('BEGIN FORMATION '
-                          '(${app.demo.mustered.length} ready)'),
-                      style: FilledButton.styleFrom(
-                        minimumSize: const Size.fromHeight(48),
-                      ),
-                    ),
-                  ],
-                );
-              }),
-            if (app.demo.isFlying) ...[
-              const SizedBox(height: 8),
-              // Replaces the barrier timeout. Nothing lands a drone for being
-              // slow any more, so a lost arrival report leaves the formation
-              // standing still -- and this is how the operator, who can see the
-              // aircraft, decides that it should carry on regardless.
-              OutlinedButton.icon(
-                onPressed: () {
-                  final refusal = app.forceNextStep();
-                  if (refusal != null && context.mounted) {
-                    ScaffoldMessenger.of(context)
-                        .showSnackBar(SnackBar(content: Text(refusal)));
-                  }
-                },
-                icon: const Icon(Icons.skip_next),
-                label: const Text('FORCE NEXT STEP'),
-                style: OutlinedButton.styleFrom(
-                  minimumSize: const Size.fromHeight(48),
-                ),
-              ),
-              Text(
-                'Sends the next vertex without waiting for every arrival. A '
-                'drone that had not arrived ends up a vertex out of phase.',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-            ],
-            const SizedBox(height: 8),
-            FilledButton.icon(
-              onPressed: app.stopDemo,
-              icon: const Icon(Icons.stop),
-              label: Text(app.demo.isMustering ? 'CANCEL' : 'STOP DEMO'),
-              style: FilledButton.styleFrom(
-                minimumSize: const Size.fromHeight(48),
-                backgroundColor: Theme.of(context).colorScheme.tertiary,
-              ),
-            ),
-          ] else ...[
-            _RosterPicker(app: app),
-            const SizedBox(height: 8),
-            FilledButton.icon(
-              onPressed: enabled ? () => app.startDemo() : null,
-              icon: const Icon(Icons.flight_takeoff),
-              label: const Text('MUSTER DRONES'),
-              style: FilledButton.styleFrom(
-                minimumSize: const Size.fromHeight(48),
-              ),
-            ),
-          ],
-          const SizedBox(height: 20),
-          const Divider(height: 1),
-          const SizedBox(height: 16),
           NumberStepper(
             label: 'Main search altitude',
             value: app.mainAltitude,
@@ -520,6 +361,17 @@ class _RecoverySection extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          // Says out loud who is about to be commanded. These buttons have
+          // always followed the Fleet selection rather than always broadcasting,
+          // but nothing on screen said so, so they read as "all drones".
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Text(
+              'Sends to ${Drone.nameFor(app.selectedTarget)} — pick a drone in '
+              'Fleet above to aim these at one aircraft.',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ),
           Row(
             children: [
               Expanded(
@@ -579,154 +431,6 @@ class _MineStrip extends StatelessWidget {
           runSpacing: 6,
           children: [for (final m in app.mines) MineIdentity(mine: m)],
         ),
-      ),
-    );
-  }
-}
-
-/// Which drones a demo is for, chosen before mustering.
-///
-/// An arbitrary subset, not "one or all": which airframes are on the field
-/// changes between tests, and addressing drones that are switched off spends
-/// uplink airtime on frames that can never be answered.
-class _RosterPicker extends StatelessWidget {
-  const _RosterPicker({required this.app});
-
-  final AppState app;
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text('Drones in this demo',
-            style: Theme.of(context).textTheme.labelSmall),
-        const SizedBox(height: 6),
-        Wrap(
-          spacing: 6,
-          runSpacing: 6,
-          children: [
-            for (final d in app.drones)
-              FilterChip(
-                label: Text(d.name),
-                selected: app.demoRoster.contains(d.id),
-                showCheckmark: false,
-                avatar: DroneBadge(color: d.color, radius: 5),
-                onSelected: (_) => app.toggleDemoRoster(d.id),
-              ),
-          ],
-        ),
-      ],
-    );
-  }
-}
-
-/// Per-drone state during a muster, with a retry for whoever did not come up.
-class _MusterRoster extends StatelessWidget {
-  const _MusterRoster({required this.app});
-
-  final AppState app;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final entries = app.demo.progress.entries.toList()
-      ..sort((a, b) => a.key.compareTo(b.key));
-    if (entries.isEmpty) return const SizedBox.shrink();
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Text(app.demo.isMustering ? 'Mustering' : 'Flying the figure',
-            style: Theme.of(context).textTheme.labelSmall),
-        const SizedBox(height: 4),
-        for (final e in entries)
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 2),
-            child: Row(
-              children: [
-                Icon(
-                  switch (e.value.phase) {
-                    DemoPhase.holding => Icons.check_circle,
-                    DemoPhase.starting => Icons.flight_takeoff,
-                    DemoPhase.stepping => Icons.navigation,
-                    DemoPhase.landing => Icons.flight_land,
-                    DemoPhase.finished => Icons.done_all,
-                    DemoPhase.stopped => Icons.cancel,
-                  },
-                  size: 16,
-                  color: switch (e.value.phase) {
-                    DemoPhase.holding => scheme.primary,
-                    DemoPhase.landing || DemoPhase.stopped => scheme.error,
-                    _ => scheme.onSurfaceVariant,
-                  },
-                ),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: Text(
-                    () {
-                      final off = app.demo.altitudeOverrideFor(e.key);
-                      final base =
-                          '${Drone.nameFor(e.key)} — ${e.value.detail ?? e.value.phase.name}';
-                      return off == null
-                          ? base
-                          : '$base · joining at ${off.toStringAsFixed(1)}m';
-                    }(),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                ),
-                // Only once it is actually walking the figure: merging a drone
-                // that is still climbing would drop its offset before it has a
-                // vertex to hold.
-                if (app.demo.altitudeOverrideFor(e.key) != null &&
-                    e.value.phase != DemoPhase.starting)
-                  TextButton(
-                    onPressed: () => app.mergeIntoFormation(e.key),
-                    child: const Text('MERGE'),
-                  ),
-                // Only offer a retry for a drone that never got up, and only
-                // while mustering -- adding one to a moving figure would put it
-                // a vertex out of phase with everybody else.
-                if (!e.value.isActive)
-                  TextButton(
-                    onPressed: () => app.retryStart(e.key),
-                    child: Text(app.demo.isMustering ? 'RETRY' : 'JOIN'),
-                  ),
-              ],
-            ),
-          ),
-      ],
-    );
-  }
-}
-
-class _Warning extends StatelessWidget {
-  const _Warning({required this.text});
-
-  final String text;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(Icons.error_outline, size: 18, color: scheme.error),
-          const SizedBox(width: 6),
-          Expanded(
-            child: Text(
-              text,
-              style: Theme.of(context)
-                  .textTheme
-                  .bodySmall
-                  ?.copyWith(color: scheme.error),
-            ),
-          ),
-        ],
       ),
     );
   }

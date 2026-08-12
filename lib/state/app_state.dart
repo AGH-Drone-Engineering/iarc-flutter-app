@@ -70,6 +70,7 @@ class AppState extends ChangeNotifier {
   static const _kLockstepKey = 'demo_lockstep_v1';
   static const _kClearanceKey = 'demo_clearance_v1';
   static const _kSettleKey = 'demo_settle_v1';
+  static const _kLookaheadKey = 'demo_lookahead_v1';
   static const _kMainAltKey = 'main_alt_v1';
   static const _kVertexKey = 'demo_vertices_v1';
   static const _kRadiusKey = 'demo_radius_v1';
@@ -97,6 +98,11 @@ class AppState extends ChangeNotifier {
   double get demoRadius => demo.radiusMeters;
   bool get demoLockstep => demo.lockstep;
   double get demoClearance => demo.clearanceMeters;
+
+  /// Vertices allowed in flight ahead of the slowest confirmed arrival. 0 is the
+  /// strict barrier; 1 or more keeps the drones' queues full so they fly the
+  /// figure without stopping on each vertex.
+  int get demoLookahead => demo.lookahead;
 
   /// Pause between a drone being seen on its vertex and the next step going
   /// out, in seconds.
@@ -460,6 +466,31 @@ class AppState extends ChangeNotifier {
     return refusal;
   }
 
+  /// Credit one drone with arriving, when the report did not come but the
+  /// operator can see it standing on its vertex.
+  String? markArrived(int id) {
+    final refusal = demo.markArrived(id);
+    if (refusal != null) logWarn('Could not mark drone $id arrived: $refusal', _tag);
+    notifyListeners();
+    return refusal;
+  }
+
+  /// Land one drone, keeping the formation's bookkeeping straight.
+  String? landDrone(int id) {
+    final refusal = demo.landDrone(id);
+    if (refusal != null) logWarn('Could not land drone $id: $refusal', _tag);
+    notifyListeners();
+    return refusal;
+  }
+
+  /// Send one drone home at the transit altitude, clear of the formation.
+  String? returnDroneHome(int id) {
+    final refusal = demo.returnDroneHome(id);
+    if (refusal != null) logWarn('Could not send drone $id home: $refusal', _tag);
+    notifyListeners();
+    return refusal;
+  }
+
   /// Bring a joiner onto the formation's altitude, on its next step.
   String? mergeIntoFormation(int id) {
     final refusal = demo.mergeIntoFormation(id);
@@ -515,6 +546,7 @@ class AppState extends ChangeNotifier {
     demo.lockstep = p.getBool(_kLockstepKey) ?? true;
     demo.clearanceMeters = p.getDouble(_kClearanceKey) ?? 4.0;
     demo.settleDelay = _settleDuration(p.getDouble(_kSettleKey) ?? 1.0);
+    demo.lookahead = p.getInt(_kLookaheadKey) ?? 1;
     mainAltitude = p.getDouble(_kMainAltKey) ?? 2.0;
     voiceLocale = p.getString(_kVoiceLocaleKey) ?? 'pl';
     notifyListeners();
@@ -551,6 +583,18 @@ class AppState extends ChangeNotifier {
     demo.lockstep = v;
     notifyListeners();
     (await _ensurePrefs()).setBool(_kLockstepKey, v);
+  }
+
+  /// Frozen for the duration of a run, like the figure: changing how many steps
+  /// are in flight halfway through would redefine what the barrier is tracking.
+  Future<void> setDemoLookahead(double v) async {
+    if (demo.isRunning) {
+      logWarn('Cannot change lookahead while the demo is running', _tag);
+      return;
+    }
+    demo.lookahead = demoLookaheadRange.clamp(v).round();
+    notifyListeners();
+    (await _ensurePrefs()).setInt(_kLookaheadKey, demo.lookahead);
   }
 
   Future<void> setDemoClearance(double v) async {

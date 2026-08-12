@@ -20,7 +20,7 @@ import 'package:latlong2/latlong.dart';
 class ConflictMonitor {
   ConflictMonitor({
     this.clearanceMeters = 4.0,
-    this.horizon = const Duration(seconds: 4),
+    this.horizon = const Duration(seconds: 2),
     this.stepCount = 16,
   });
 
@@ -29,6 +29,13 @@ class ConflictMonitor {
 
   /// How far ahead to look. Long enough to see a crossing develop, short enough
   /// that a constant-velocity guess is still worth something.
+  ///
+  /// Two seconds, down from four. A four second straight-line extrapolation of a
+  /// drone walking a polygon is mostly fiction -- it predicts it flying through
+  /// the vertex it is about to stop on -- and every second of it inflates the
+  /// travel term in [_Track.uncertaintyMeters]. Since nothing is landed on this
+  /// any more and the pilots are the backstop, the horizon is set to the range
+  /// where the prediction is actually worth something.
   final Duration horizon;
 
   final int stepCount;
@@ -204,15 +211,16 @@ class _Track {
 
   double get ageSeconds => age.inMilliseconds / 1000.0;
 
-  /// How far from the reported point the drone could already be.
+  /// How far the drone may have moved since the fix was taken.
   ///
-  /// A guessed speed gets a margin on top: if we are inferring motion from 1 Hz
-  /// fixes we can be a whole sample behind, and being wrong in the direction of
-  /// "it is closer than I think" is the one that hurts.
-  /// Where the drone could be: how far it may have travelled since the fix was
-  /// taken, plus how wrong the fix itself may be.
-  double get uncertaintyMeters =>
-      speed * ageSeconds * (measured ? 1.0 : _guessPenalty) + accuracy;
-
-  static const double _guessPenalty = 1.5;
+  /// Deliberately the *measurement* and nothing else now. It used to carry two
+  /// pessimism terms on top -- a 1.5x penalty when speed was inferred rather than
+  /// reported, and the GPS receiver's own `acc` added whole -- which between them
+  /// could double the disc and made the clearance check fire on arithmetic rather
+  /// than on aircraft. `acc` is the receiver's pre-EKF 1-sigma, an upper bound
+  /// that the fused solution beats in practice, so adding it to a margin the
+  /// operator has already set was counting the same doubt twice.
+  ///
+  /// The operator's [clearanceMeters] is the margin. This is the estimate.
+  double get uncertaintyMeters => speed * ageSeconds;
 }
