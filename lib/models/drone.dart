@@ -52,7 +52,21 @@ class Drone {
   int? batteryPercent;
   MissionEvent? lastEvent;
 
+  /// Pozycja z ostatniego zdarzenia, o ile je podało.
+  ///
+  /// Pole `at` w EVT jest opcjonalne -- zdarzenie bez sensownego fixa (ABORT po
+  /// utracie pozycji) wychodzi bez niego. Null znaczy więc "dron nie powiedział
+  /// gdzie", a nie "na zerowych współrzędnych".
+  LatLng? lastEventAt;
+
   final List<LatLng> track = [];
+
+  /// Waypointy głównej misji, które dron zgłosił jako osiągnięte.
+  ///
+  /// Trzymane osobno od [track]: ślad to gęsty strumień telemetrii, a to są
+  /// punkty, w których dron sam uznał, że doleciał. Kumulują się przez całą
+  /// misję, bo pokazują ile z planu jest już za nami.
+  final List<LatLng> waypointsReached = [];
 
   Drone._(this.id, this.name, this.color) {
     registry[id] = this;
@@ -128,6 +142,8 @@ class Drone {
     battery = null;
     batteryPercent = null;
     lastEvent = null;
+    lastEventAt = null;
     track.clear();
+    waypointsReached.clear();
   }
 }

@@ -2,12 +2,22 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// Warstwy, które można pokazać albo ukryć na mapie.
-enum MapLayer { drones, droneTracks, mines, user, path, coverage, scanRects }
+enum MapLayer {
+  drones,
+  droneTracks,
+  waypoints,
+  mines,
+  user,
+  path,
+  coverage,
+  scanRects,
+}
 
 extension MapLayerDisplay on MapLayer {
   String get label => switch (this) {
         MapLayer.drones => 'Drony',
         MapLayer.droneTracks => 'Trasy dronów',
+        MapLayer.waypoints => 'Osiągnięte waypointy',
         MapLayer.mines => 'Miny',
         MapLayer.user => 'Twoja pozycja',
         MapLayer.path => 'Bezpieczna ścieżka',
@@ -18,6 +28,7 @@ extension MapLayerDisplay on MapLayer {
   IconData get icon => switch (this) {
         MapLayer.drones => Icons.flight,
         MapLayer.droneTracks => Icons.timeline,
+        MapLayer.waypoints => Icons.flag,
         MapLayer.mines => Icons.dangerous,
         MapLayer.user => Icons.my_location,
         MapLayer.path => Icons.route,

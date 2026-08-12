@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../models/drone.dart';
+import '../models/mission_message.dart';
 import '../services/command_tracker.dart';
 import 'drone_visuals.dart';
 
@@ -66,11 +67,32 @@ class _DroneStatusTileState extends State<DroneStatusTile> {
     ].join('  ·  ');
   }
 
+  /// Ostatnie zdarzenie, z pozycją jeśli dron ją podał.
+  ///
+  /// Dla WAYPOINT_REACHED dochodzi licznik zaliczonych punktów -- samo "WP 12"
+  /// mówi o postępie misji więcej niż powtórzone współrzędne, a te i tak są
+  /// widoczne obok. Zdarzenia bez `at` (np. ABORT po utracie fixa) pokazują
+  /// tylko swoją nazwę.
+  String? _eventLine(Drone d) {
+    final event = d.lastEvent;
+    if (event == null) return null;
+
+    final label = event == MissionEvent.waypointReached
+        ? 'WP ${d.waypointsReached.length}'
+        : event.wire;
+
+    final at = d.lastEventAt;
+    if (at == null) return label;
+    return '$label  ·  ${at.latitude.toStringAsFixed(6)}, '
+        '${at.longitude.toStringAsFixed(6)}';
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final d = widget.drone;
     final stateColor = droneStateColor(d, scheme, failure: widget.failure);
+    final eventLine = _eventLine(d);
 
     return Material(
       color: widget.selected
@@ -132,6 +154,17 @@ class _DroneStatusTileState extends State<DroneStatusTile> {
                           ),
                       overflow: TextOverflow.ellipsis,
                     ),
+                    if (eventLine != null) ...[
+                      const SizedBox(height: 2),
+                      Text(
+                        eventLine,
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              color: scheme.onSurfaceVariant,
+                              fontFeatures: const [FontFeature.tabularFigures()],
+                            ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
                   ],
                 ),
               ),

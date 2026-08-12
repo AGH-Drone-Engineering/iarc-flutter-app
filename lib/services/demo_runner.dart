@@ -586,8 +586,10 @@ class DemoRunner extends ChangeNotifier {
       return;
     }
 
-    // Not an arrival: sent once, never acknowledged, and carries no position.
-    // Telemetry repeats and says where. Kept as an operator hint.
+    // Not an arrival: sent once, never acknowledged. The main mission now puts an
+    // `at` on this event, but the formation still cannot step on it -- one lost
+    // frame and the barrier never releases. Only a log trace here; AppState keeps
+    // the position, and the formation moves on ARRIVED.
     if (event == MissionEvent.waypointReached) {
       logTrace(_tag, 'drone $droneId reported WAYPOINT_REACHED');
     }

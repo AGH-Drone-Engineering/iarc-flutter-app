@@ -176,7 +176,11 @@ sealed class MissionMessage {
           position: LatLng(_double(parsed, 'lat'), _double(parsed, 'lon')),
         ),
       'EVT' =>
-        EventMessage(seq: seq, event: MissionEvent.fromWire(_string(parsed, 'ev'))),
+          EventMessage(
+            seq: seq,
+            event: MissionEvent.fromWire(_string(parsed, 'ev')),
+            at: parsed.containsKey('at') ? _latLonPair(parsed, 'at') : null,
+          ),
       'SCAN' => ScanMessage(
           seq: seq,
           cornerA: _latLonPair(parsed, 'a'),
@@ -463,11 +467,16 @@ class MineMessage extends MissionMessage {
 
 class EventMessage extends MissionMessage {
   final MissionEvent event;
-  const EventMessage({required super.seq, required this.event});
+  final LatLng? at;
+
+  const EventMessage({required super.seq, required this.event, this.at});
   @override
   String get type => 'EVT';
   @override
-  Map<String, Object?> get fields => {'ev': event.wire};
+  Map<String, Object?> get fields => {
+        'ev': event.wire,
+        if (at != null) 'at': [_round(at!.latitude, 7), _round(at!.longitude, 7)],
+      };
 }
 
 /// Prostokątny obszar uznany przez drona za przeskanowany.
@@ -680,7 +689,22 @@ LatLng _latLonPair(Map<String, Object?> json, String key) {
   if (v is! List || v.length < 2 || v[0] is! num || v[1] is! num) {
     throw MissionMessageException('Field "$key" must be a [lat,lon] pair');
   }
-  return LatLng((v[0] as num).toDouble(), (v[1] as num).toDouble());
+  final lat = (v[0] as num).toDouble();
+  final lon = (v[1] as num).toDouble();
+  // LatLng samo pilnuje zakresu, ale rzuca AssertionError, a tego wyżej nikt nie
+  // łapie -- jedna przekręcona ramka zabiłaby odbiór do końca sesji. Sprawdzamy
+  // więc sami i zgłaszamy to jak każde inne złe pole.
+  if (lat.isNaN ||
+      lon.isNaN ||
+      lat < -90 ||
+      lat > 90 ||
+      lon < -180 ||
+      lon > 180) {
+    throw MissionMessageException(
+      'Field "$key" is outside lat/lon range: $lat,$lon',
+    );
+  }
+  return LatLng(lat, lon);
 }
 
 ({double north, double east})? _optionalVelocity(Map<String, Object?> parsed) {

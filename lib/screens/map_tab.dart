@@ -267,6 +267,32 @@ class _MapTabState extends State<MapTab> {
                   minPixelDiameter: 3.0,
                 ),
 
+            // Waypointy zaliczone przez drony, w kolejności zgłoszenia i w
+            // kolorze drona. Sam ślad z telemetrii tego nie pokazuje: widać po
+            // nim gdzie dron był, ale nie które punkty planu uznał za odhaczone.
+            if (settings.isVisible(MapLayer.waypoints))
+              for (final d in drones) ...[
+                if (d.waypointsReached.length > 1)
+                  PolylineLayer(
+                    polylines: [
+                      Polyline(
+                        points: d.waypointsReached,
+                        color: d.color.withValues(alpha: 0.7),
+                        strokeWidth: 1.5,
+                      ),
+                    ],
+                  ),
+                GroundDotsLayer(
+                  points: d.waypointsReached,
+                  diameterMeters: 2.0,
+                  color: d.color,
+                  minPixelDiameter: 8.0,
+                  innerDiameterMeters: 0.8,
+                  innerColor: Colors.black87,
+                  innerMinPixelDiameter: 3.0,
+                ),
+              ],
+
             if (settings.isVisible(MapLayer.mines) && app.mines.isNotEmpty)
               GroundDotsLayer(
                 points: [for (final m in app.mines) m.position],
