@@ -242,14 +242,49 @@ class AppState extends ChangeNotifier {
         probe.handlePong(incoming.from, p);
       case EventMessage e:
         drone?.lastEvent = e.event;
+        drone?.lastEventAt = e.at;
+        if (drone != null) _recordWaypoint(drone, e);
         demo.handleEvent(incoming.from, e.event);
-        logInfo('${Drone.nameFor(incoming.from)}: ${e.event.wire}', _tag);
+        logInfo('${Drone.nameFor(incoming.from)}: ${_describeEvent(e)}', _tag);
       default:
         break;
     }
 
     tracker.handleIncoming(incoming.from, incoming.message);
     notifyListeners();
+  }
+
+  /// Poniżej tego progu drugi WAYPOINT_REACHED to ta sama ramka dostarczona
+  /// dwukrotnie, a nie drugi waypoint.
+  ///
+  /// EVT nie przechodzi przez pamięć powtórek (`_acknowledgeReport`), bo nie
+  /// jest raportem potwierdzanym -- zdarzenie policzone dwa razy postawiłoby na
+  /// mapie dwa znaczniki jeden na drugim. Próg jest rzędu błędu GPS: dwa
+  /// osobne waypointy głównej misji dzieli szerokość przelotu, a więc znacznie
+  /// więcej.
+  static const double _waypointDedupeMeters = 1.0;
+
+  void _recordWaypoint(Drone drone, EventMessage e) {
+    final at = e.at;
+    if (e.event != MissionEvent.waypointReached || at == null) return;
+
+    final previous = drone.waypointsReached.isEmpty
+        ? null
+        : drone.waypointsReached.last;
+    if (previous != null &&
+        _distance.as(LengthUnit.Meter, previous, at) <=
+            _waypointDedupeMeters) {
+      return;
+    }
+    drone.waypointsReached.add(at);
+  }
+
+  String _describeEvent(EventMessage event) {
+    final wire = event.event.wire;
+    final at = event.at;
+    if (at == null) return wire;
+    return '$wire at ${at.latitude.toStringAsFixed(7)}, '
+        '${at.longitude.toStringAsFixed(7)}';
   }
 
   final Set<String> _reportsSeen = {};
